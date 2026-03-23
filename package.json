@@ -1,0 +1,25 @@
+{
+  "name": "vide-coding-agent",
+  "private": true,
+  "version": "0.1.0",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces --if-present",
+    "dev:all": "node scripts/dev-all.mjs",
+    "dev:agent": "cd services/agent-service && uvicorn app.main:app --reload --port 8001",
+    "dev:api": "npm --workspace @vide/orchestrator-api run dev",
+    "dev:playground": "npm --workspace @vide/playground run dev",
+    "test": "npm run test --workspaces --if-present",
+    "typecheck": "npm run typecheck --workspaces --if-present"
+  },
+  "engines": {
+    "node": ">=20.0.0",
+    "npm": ">=10.0.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.8.2"
+  }
+}

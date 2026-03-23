@@ -1,0 +1,255 @@
+:root {
+  color-scheme: light;
+  font-family: "Space Grotesk", "Helvetica Neue", sans-serif;
+  background:
+    radial-gradient(circle at top left, rgba(255, 142, 83, 0.22), transparent 24%),
+    radial-gradient(circle at top right, rgba(78, 203, 178, 0.18), transparent 20%),
+    linear-gradient(180deg, #fbf7f0 0%, #efe6da 100%);
+  color: #17120f;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+}
+
+button {
+  border: none;
+  border-radius: 16px;
+  padding: 12px 16px;
+  background: #17120f;
+  color: #fff7ef;
+  cursor: pointer;
+}
+
+button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+textarea,
+input,
+select {
+  width: 100%;
+  border-radius: 16px;
+  border: 1px solid rgba(52, 36, 23, 0.14);
+  background: rgba(255, 251, 246, 0.9);
+  padding: 14px 16px;
+}
+
+#root {
+  min-height: 100vh;
+}
+
+.app-shell {
+  display: grid;
+  grid-template-columns: 380px 1fr;
+  gap: 24px;
+  min-height: 100vh;
+  padding: 24px;
+}
+
+.control-panel,
+.workspace {
+  display: grid;
+  gap: 20px;
+}
+
+.hero-block {
+  padding: 8px 4px 0;
+}
+
+.eyebrow {
+  margin: 0 0 14px;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  font-size: 12px;
+  color: #9c5e2a;
+}
+
+h1 {
+  margin: 0 0 12px;
+  font-size: clamp(2.4rem, 3vw, 3.4rem);
+  line-height: 0.94;
+}
+
+h2 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.hero-copy,
+.summary,
+.bullets span,
+.message p,
+.preview-empty {
+  color: #5b4c41;
+}
+
+.panel {
+  border: 1px solid rgba(51, 35, 25, 0.12);
+  border-radius: 28px;
+  background: rgba(255, 250, 245, 0.82);
+  box-shadow: 0 28px 60px rgba(79, 54, 26, 0.1);
+  padding: 20px;
+}
+
+.panel.accent {
+  background: rgba(255, 238, 216, 0.88);
+}
+
+.panel.success {
+  background: rgba(226, 255, 236, 0.88);
+}
+
+.error-panel {
+  color: #98270d;
+  background: rgba(255, 230, 225, 0.95);
+}
+
+.ghost {
+  padding: 8px 12px;
+  background: rgba(23, 18, 15, 0.08);
+  color: #17120f;
+}
+
+.section-title {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.stacked {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.stacked span {
+  font-size: 0.9rem;
+}
+
+.meta-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.meta-grid div {
+  padding: 14px;
+  border-radius: 20px;
+  background: rgba(23, 18, 15, 0.05);
+}
+
+.meta-grid span {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: #826c5c;
+}
+
+.workspace-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 20px;
+}
+
+.message-list {
+  display: grid;
+  gap: 12px;
+  max-height: 380px;
+  overflow: auto;
+}
+
+.message {
+  border-radius: 22px;
+  padding: 14px 16px;
+}
+
+.message span {
+  display: block;
+  margin-bottom: 8px;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: #826c5c;
+}
+
+.message.user {
+  background: rgba(23, 18, 15, 0.08);
+}
+
+.message.assistant {
+  background: rgba(236, 224, 209, 0.72);
+}
+
+.message p {
+  margin: 0;
+  white-space: pre-wrap;
+}
+
+.bullets {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: grid;
+  gap: 12px;
+}
+
+.bullets li {
+  display: grid;
+  gap: 4px;
+  padding: 14px;
+  border-radius: 18px;
+  background: rgba(23, 18, 15, 0.05);
+}
+
+.preview-panel iframe {
+  width: 100%;
+  min-height: 560px;
+  border: none;
+  border-radius: 18px;
+  background: white;
+}
+
+.preview-empty {
+  min-height: 200px;
+  display: grid;
+  place-items: center;
+  border-radius: 18px;
+  background: rgba(23, 18, 15, 0.05);
+}
+
+.logs-panel pre {
+  margin: 0;
+  max-height: 240px;
+  overflow: auto;
+  border-radius: 18px;
+  padding: 16px;
+  background: #17120f;
+  color: #f7ede1;
+  font-family: "SFMono-Regular", "Menlo", monospace;
+}
+
+@media (max-width: 1180px) {
+  .app-shell,
+  .workspace-grid {
+    grid-template-columns: 1fr;
+  }
+}

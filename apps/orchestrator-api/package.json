@@ -1,0 +1,24 @@
+{
+  "name": "@vide/orchestrator-api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "npm --workspace @vide/contracts run build && tsc -p tsconfig.json",
+    "dev": "npm --workspace @vide/contracts run build && tsx watch src/index.ts",
+    "start": "node dist/index.js",
+    "test": "npm --workspace @vide/contracts run build && node --import tsx --test src/**/*.test.ts",
+    "typecheck": "npm --workspace @vide/contracts run build && tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@fastify/cors": "^11.0.0",
+    "@vide/contracts": "0.1.0",
+    "fastify": "^5.0.0",
+    "pg": "^8.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "tsx": "^4.20.0",
+    "typescript": "^5.8.0"
+  }
+}
