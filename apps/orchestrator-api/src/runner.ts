@@ -24,9 +24,10 @@ export function commandForStep(step: ExecutionStep, portOverride?: number): stri
     case "build_web_app":
       return ["npm", "run", "build"];
     case "start_vite_preview":
-      return ["npm", "run", "dev", "--", "--host", "0.0.0.0", "--port", String(portOverride ?? step.port)];
+      return ["npm", "run", "dev", "--", "--host", "0.0.0.0", "--port", String(portOverride ?? step.port ?? 4173)];
     case "stop_preview":
     case "git_snapshot":
+    case "health_check":
       return null;
     default:
       return null;
@@ -38,13 +39,13 @@ async function writeLog(project: ProjectRecord, message: string): Promise<void> 
   await appendFile(join(project.workspaceRoot, ".preview.log"), message, "utf-8");
 }
 
-async function waitForHealthy(port: number, timeoutMs = 60_000): Promise<string> {
+async function waitForHealthy(url: string, timeoutMs = 60_000): Promise<string> {
   const started = Date.now();
   while (Date.now() - started < timeoutMs) {
     try {
-      const response = await fetch(`http://127.0.0.1:${port}`);
+      const response = await fetch(url);
       if (response.ok) {
-        return `http://127.0.0.1:${port}`;
+        return url;
       }
     } catch {
       // keep polling until the timeout elapses
@@ -53,7 +54,7 @@ async function waitForHealthy(port: number, timeoutMs = 60_000): Promise<string>
     await new Promise((resolve) => setTimeout(resolve, 1000));
   }
 
-  throw new Error(`Preview server did not become healthy on port ${port}.`);
+  throw new Error(`Preview server did not become healthy at ${url}.`);
 }
 
 async function isDockerAvailable(): Promise<boolean> {
@@ -85,6 +86,13 @@ class LocalProcessRunner {
       child.kill("SIGKILL");
     }
     this.processes.delete(project.id);
+  }
+
+  async stopAll(): Promise<void> {
+    for (const [id, child] of this.processes) {
+      child.kill("SIGTERM");
+      this.processes.delete(id);
+    }
   }
 
   async runForeground(step: ExecutionStep, context: RunnerContext): Promise<void> {
@@ -123,10 +131,11 @@ class LocalProcessRunner {
     });
   }
 
-  async startPreview(step: Extract<ExecutionStep, { type: "start_vite_preview" }>, context: RunnerContext): Promise<string> {
+  async startPreview(step: ExecutionStep, context: RunnerContext): Promise<string> {
     await this.stop(context.project);
 
-    const command = commandForStep(step, step.port);
+    const port = step.port ?? 4173;
+    const command = commandForStep(step, port);
     if (!command) {
       throw new Error("No command available for preview start.");
     }
@@ -148,8 +157,7 @@ class LocalProcessRunner {
     });
 
     this.processes.set(context.project.id, child);
-
-    return waitForHealthy(step.port);
+    return waitForHealthy(`http://127.0.0.1:${port}`);
   }
 }
 
@@ -168,6 +176,17 @@ class DockerRunner {
       // no-op
     }
     this.containers.delete(project.id);
+  }
+
+  async stopAll(): Promise<void> {
+    for (const [id, name] of this.containers) {
+      try {
+        await execFile("docker", ["rm", "-f", name]);
+      } catch {
+        // no-op
+      }
+      this.containers.delete(id);
+    }
   }
 
   async runForeground(step: ExecutionStep, context: RunnerContext): Promise<void> {
@@ -209,9 +228,10 @@ class DockerRunner {
     }
   }
 
-  async startPreview(step: Extract<ExecutionStep, { type: "start_vite_preview" }>, context: RunnerContext): Promise<string> {
+  async startPreview(step: ExecutionStep, context: RunnerContext): Promise<string> {
     await this.stop(context.project);
 
+    const port = step.port ?? 4173;
     const name = this.containerName(context.project);
     await execFile(
       "docker",
@@ -225,7 +245,7 @@ class DockerRunner {
         "-v",
         `${context.project.workspaceRoot}:/app`,
         "-p",
-        `${step.port}:4173`,
+        `${port}:4173`,
         "node:22-alpine",
         "sh",
         "-lc",
@@ -235,7 +255,7 @@ class DockerRunner {
     );
 
     this.containers.set(context.project.id, name);
-    return waitForHealthy(step.port);
+    return waitForHealthy(`http://127.0.0.1:${port}`);
   }
 }
 
@@ -255,6 +275,11 @@ export class RunnerService {
     }
 
     return (await isDockerAvailable()) ? this.docker : this.local;
+  }
+
+  async stopAll(): Promise<void> {
+    await this.local.stopAll();
+    await this.docker.stopAll();
   }
 
   async stop(project: ProjectRecord, emitLog: (message: string) => Promise<void>): Promise<void> {
@@ -280,6 +305,8 @@ export class RunnerService {
         return undefined;
       case "start_vite_preview":
         return runner.startPreview(step, context);
+      case "health_check":
+        return waitForHealthy(step.url ?? `http://127.0.0.1:${step.port ?? 4173}`);
       case "stop_preview":
         await runner.stop(project);
         return undefined;

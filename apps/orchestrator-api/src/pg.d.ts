@@ -1,6 +1,6 @@
 declare module "pg" {
   export class Pool {
     constructor(config?: Record<string, unknown>);
-    query<T = any>(text: string, values?: unknown[]): Promise<{ rows: T[] }>;
+    query<T = any>(text: string, values?: unknown[]): Promise<{ rows: T[]; rowCount: number | null }>;
   }
 }

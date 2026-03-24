@@ -6,7 +6,7 @@ from typing import List
 
 from langchain_core.prompts import ChatPromptTemplate
 
-from app.models import AgentSessionState, AppSpec, PlanStep, StructuredPlanOutput, StructuredSpecOutput
+from app.models import AgentSessionState, AppSpec, DataModelNeed, FlowSpec, PlanStep, ScreenSpec, StructuredPlanOutput, StructuredSpecOutput
 from app.services.errors import GenerationFailure
 from app.services.json_parser import parse_json_response
 from app.services.model_provider import ModelProvider
@@ -22,121 +22,209 @@ class SpecBuilder:
         self.provider = ModelProvider()
 
     def build_spec(self, state: AgentSessionState) -> AppSpec:
+        working_spec = state.working_spec
         prompt = ChatPromptTemplate.from_messages(
             [
                 (
                     "system",
-                    "You normalize product requirements into a concise React + Vite web-app spec. "
-                    "You must rely on the provided Qwen model and return structured output only. "
-                    "Your response must be valid JSON that matches the requested schema. "
-                    "Do not wrap the JSON in markdown fences. "
-                    "Return a JSON object with keys: title, summary, target_users, pages, key_interactions, visual_style, integrations, assumptions.",
+                    "You normalize a hierarchical product brief into an implementation-ready React + Vite web app spec. "
+                    "Preserve the user's intent, make missing details explicit as assumptions, and return valid JSON only.",
                 ),
                 (
                     "human",
                     "Conversation:\n{messages}\n\n"
-                    "Requirement slots:\n{slots}\n\n"
-                    "Assumptions already made:\n{assumptions}\n\n"
-                    "Generate a focused web-app spec for implementation.",
+                    "Working spec:\n{working_spec}\n\n"
+                    "Known assumptions:\n{assumptions}\n\n"
+                    "Return a JSON object with keys: title, summary, goal, targetUsers, screens, coreFlows, "
+                    "dataModelNeeds, integrations, brandAndVisualDirection, constraints, successCriteria, assumptions.",
                 ),
             ]
         )
         result = self._invoke_structured(
+            role="planner",
             output_schema=StructuredSpecOutput,
             prompt=prompt,
             payload={
-                "messages": dumps([message.model_dump(mode="json") for message in state.messages], ensure_ascii=False),
-                "slots": dumps(state.requirement_slots.model_dump(), ensure_ascii=False),
+                "messages": dumps([message.model_dump(mode="json", by_alias=True) for message in state.messages], ensure_ascii=False),
+                "working_spec": dumps(state.working_spec.model_dump(mode="json", by_alias=True), ensure_ascii=False),
                 "assumptions": "\n".join(state.assumptions) or "None",
             },
         )
         return AppSpec(
-            appName=slugify(result.title),
-            title=result.title,
-            summary=result.summary,
-            targetUsers=self._normalize_target_users(result.target_users),
-            pages=self._normalize_named_list(result.pages),
-            keyInteractions=self._normalize_named_list(result.key_interactions),
-            visualStyle=self._normalize_visual_style(result.visual_style),
-            integrations=self._normalize_named_list(result.integrations),
-            assumptions=result.assumptions,
+            appName=slugify(self._coalesce_text(result.title, working_spec.title, working_spec.goal, "generated-app")),
+            title=self._coalesce_text(result.title, working_spec.title, working_spec.goal, "Generated App"),
+            summary=self._coalesce_text(
+                result.summary,
+                working_spec.summary,
+                result.goal,
+                working_spec.goal,
+                "Implementation-ready web app generated from the latest conversation.",
+            ),
+            goal=self._coalesce_text(
+                result.goal,
+                working_spec.goal,
+                working_spec.summary,
+                state.messages[-1].content if state.messages else None,
+                "Build a useful web application that fits the user's request.",
+            ),
+            targetUsers=self._normalize_string_list(result.target_users or working_spec.target_users),
+            screens=self._normalize_screens(result.screens),
+            coreFlows=self._normalize_flows(result.core_flows),
+            dataModelNeeds=self._normalize_data_model_needs(result.data_model_needs),
+            integrations=self._normalize_string_list(result.integrations),
+            brandAndVisualDirection=self._coalesce_text(
+                result.brand_and_visual_direction,
+                working_spec.brand_and_visual_direction,
+                "Clean, modern, implementation-ready interface direction.",
+            ),
+            constraints=self._normalize_string_list(result.constraints),
+            successCriteria=self._normalize_string_list(result.success_criteria),
+            assumptions=self._normalize_string_list(result.assumptions),
         )
 
-    def build_plan(self, state: AgentSessionState, spec: AppSpec) -> List[PlanStep]:
+    def build_plan(self, spec: AppSpec) -> List[PlanStep]:
         prompt = ChatPromptTemplate.from_messages(
             [
                 (
                     "system",
-                    "You write short execution plans for a Qwen-powered vibe coding agent. "
-                    "Your response must be valid JSON that matches the requested schema. "
-                    "Do not wrap the JSON in markdown fences. "
-                    "Return a JSON object with keys: steps and summary.",
+                    "You write short execution plans for a commercial coding agent. "
+                    "Return valid JSON only with keys: steps and summary.",
                 ),
                 (
                     "human",
-                    "Create 4 concise implementation steps for this spec:\n{spec}",
+                    "Create 5 concise implementation steps for this spec:\n{spec}",
                 ),
             ]
         )
         result = self._invoke_structured(
+            role="planner",
             output_schema=StructuredPlanOutput,
             prompt=prompt,
             payload={"spec": dumps(spec.model_dump(mode="json", by_alias=True), ensure_ascii=False)},
         )
         return [
-            PlanStep(id=f"step-{index+1}", title=step, detail=step, status="pending")
-            for index, step in enumerate(result.steps[:4])
+            PlanStep(id=f"step-{index + 1}", title=step, detail=step, status="pending")
+            for index, step in enumerate(result.steps[:5])
         ]
 
-    def _invoke_structured(self, output_schema, prompt: ChatPromptTemplate, payload: dict):
+    def _invoke_structured(self, role: str, output_schema, prompt: ChatPromptTemplate, payload: dict):
         try:
-            model = self.provider.require_chat_model()
+            model = self.provider.require_chat_model(role)  # type: ignore[arg-type]
             messages = prompt.format_messages(**payload)
-            response = model.invoke(messages)
-            return parse_json_response(response.content, output_schema)
+            try:
+                return model.with_structured_output(output_schema, method="json_mode").invoke(messages)
+            except Exception:
+                response = model.invoke(messages)
+                return parse_json_response(response.content, output_schema)
         except Exception as exc:
             if isinstance(exc, GenerationFailure):
                 raise
-            raise GenerationFailure(f"Qwen request failed while preparing the app plan: {exc}") from exc
+            raise GenerationFailure(f"Planner model failed while preparing the spec: {exc}") from exc
 
     @staticmethod
-    def _normalize_target_users(value) -> str:
-        if isinstance(value, list):
-            return "、".join(str(item).strip() for item in value if str(item).strip())
-        return str(value).strip()
-
-    @staticmethod
-    def _normalize_named_list(items) -> List[str]:
-        if isinstance(items, dict):
+    def _normalize_string_list(items) -> List[str]:
+        if items is None:
+            return []
+        if not isinstance(items, list):
             items = [items]
+
         normalized: List[str] = []
         for item in items:
             if isinstance(item, dict):
                 name = item.get("name") or item.get("title") or item.get("label")
-                detail = item.get("description") or item.get("summary")
+                detail = item.get("description") or item.get("summary") or item.get("purpose")
                 if name and detail:
                     normalized.append(f"{name}: {detail}")
                 elif name:
                     normalized.append(str(name).strip())
+                elif detail:
+                    normalized.append(str(detail).strip())
                 else:
-                    normalized.append(str(item).strip())
+                    text = SpecBuilder._stringify_value(item)
+                    if text:
+                        normalized.append(text)
             else:
-                normalized.append(str(item).strip())
+                text = SpecBuilder._stringify_value(item)
+                if text:
+                    normalized.append(text)
+
         return [item for item in normalized if item]
 
     @staticmethod
-    def _normalize_visual_style(value) -> str:
+    def _coalesce_text(*values: object) -> str:
+        for value in values:
+            text = SpecBuilder._stringify_value(value)
+            if text:
+                return text
+        return ""
+
+    @staticmethod
+    def _stringify_value(value: object) -> str:
+        if value is None:
+            return ""
         if isinstance(value, dict):
-            parts: List[str] = []
+            parts = []
             for key, item in value.items():
-                if isinstance(item, list):
-                    parts.append(f"{key}: {'、'.join(str(entry).strip() for entry in item if str(entry).strip())}")
-                elif isinstance(item, dict):
-                    parts.append(
-                        f"{key}: "
-                        + "、".join(f"{sub_key}={sub_value}" for sub_key, sub_value in item.items())
-                    )
-                else:
-                    parts.append(f"{key}: {item}")
-            return " | ".join(parts)
+                text = SpecBuilder._stringify_value(item)
+                if text:
+                    parts.append(f"{key}: {text}")
+            return "; ".join(parts).strip()
+        if isinstance(value, list):
+            parts = [SpecBuilder._stringify_value(item) for item in value]
+            return ", ".join([part for part in parts if part]).strip()
         return str(value).strip()
+
+    def _normalize_screens(self, screens: List[ScreenSpec]) -> List[ScreenSpec]:
+        normalized: List[ScreenSpec] = []
+        for index, screen in enumerate(screens or []):
+            name = self._coalesce_text(screen.name, screen.id, f"Screen {index + 1}")
+            screen_id = slugify(self._coalesce_text(screen.id, name, f"screen-{index + 1}"))
+            purpose = self._coalesce_text(
+                screen.purpose,
+                f"Support the {name.lower()} experience.",
+            )
+            elements = screen.elements if isinstance(screen.elements, list) else [screen.elements]
+            normalized.append(
+                ScreenSpec(
+                    id=screen_id,
+                    name=name,
+                    purpose=purpose,
+                    elements=[item for item in elements if item is not None],
+                )
+            )
+        return normalized
+
+    def _normalize_flows(self, flows: List[FlowSpec]) -> List[FlowSpec]:
+        normalized: List[FlowSpec] = []
+        for index, flow in enumerate(flows or []):
+            name = self._coalesce_text(flow.name, flow.id, f"Flow {index + 1}")
+            flow_id = slugify(self._coalesce_text(flow.id, name, f"flow-{index + 1}"))
+            steps = [str(step).strip() for step in flow.steps if str(step).strip()]
+            success = self._coalesce_text(
+                flow.success,
+                f"Users can successfully complete {name.lower()}.",
+            )
+            normalized.append(
+                FlowSpec(
+                    id=flow_id,
+                    name=name,
+                    steps=steps,
+                    success=success,
+                )
+            )
+        return normalized
+
+    def _normalize_data_model_needs(self, items: List[DataModelNeed]) -> List[DataModelNeed]:
+        normalized: List[DataModelNeed] = []
+        for index, item in enumerate(items or []):
+            entity = self._coalesce_text(item.entity, f"Entity {index + 1}")
+            fields = [str(field).strip() for field in item.fields if str(field).strip()]
+            notes = self._coalesce_text(item.notes)
+            normalized.append(
+                DataModelNeed(
+                    entity=entity,
+                    fields=fields,
+                    notes=notes or None,
+                )
+            )
+        return normalized

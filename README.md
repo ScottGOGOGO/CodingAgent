@@ -30,6 +30,8 @@ ORCHESTRATOR_PORT=4102
 VITE_API_BASE=http://127.0.0.1:4102
 ```
 
+If your model provider is slow and `/agent/turn` requests time out during generation, increase `AGENT_SERVICE_TIMEOUT_MS` in your env file. The default is `300000` (5 minutes).
+
 Or start the agent service, API, and playground separately:
 
 ```bash

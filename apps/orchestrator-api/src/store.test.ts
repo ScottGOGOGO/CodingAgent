@@ -19,22 +19,21 @@ function makeProject(): ProjectRecord {
       status: "idle",
       updatedAt: now,
     },
+    currentSessionId: "session-1",
     session: {
       sessionId: "session-1",
       projectId: "project-1",
       reasoningMode: "plan_solve",
       messages: [],
-      requirementSlots: {},
-      clarityScore: 0,
-      clarificationRounds: 0,
-      missingSlots: [],
-      clarificationQuestions: [],
+      workingSpec: {},
       status: "draft",
       planSteps: [],
       fileChangeSummary: [],
-      fileChanges: [],
+      fileOperations: [],
       executionManifest: [],
       versionNumber: 0,
+      assumptions: [],
+      lastContextPaths: [],
     },
     versions: [],
   };
@@ -44,10 +43,10 @@ test("memory store persists project updates", async () => {
   const store = new MemoryProjectStore();
   const project = makeProject();
 
-  await store.create(project);
+  await store.createProject(project);
   project.status = "ready";
-  await store.save(project);
+  await store.saveProject(project);
 
-  const loaded = await store.get(project.id);
+  const loaded = await store.getProject(project.id);
   assert.equal(loaded?.status, "ready");
 });

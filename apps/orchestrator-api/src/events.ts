@@ -10,7 +10,14 @@ export class ProjectEventBus {
   }
 
   subscribe(projectId: string, listener: (event: ProjectEvent) => void) {
-    this.emitter.on(projectId, listener);
-    return () => this.emitter.off(projectId, listener);
+    const safeListener = (event: ProjectEvent) => {
+      try {
+        listener(event);
+      } catch (error) {
+        console.error(`Event subscriber error for project ${projectId}:`, error);
+      }
+    };
+    this.emitter.on(projectId, safeListener);
+    return () => this.emitter.off(projectId, safeListener);
   }
 }

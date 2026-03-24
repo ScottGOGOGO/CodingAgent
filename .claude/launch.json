@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "architecture-diagram",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": ["serve", "docs", "-l", "9111", "--no-clipboard"],
+      "port": 9111
+    }
+  ]
+}

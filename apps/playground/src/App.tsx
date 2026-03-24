@@ -1,379 +1,300 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
-import type { ProjectEvent, ProjectRecord, ReasoningMode, SlotKey } from "@vide/contracts";
+import type { ChatMessage, ProjectStatus } from "@vide/contracts";
 
-const API_BASE = import.meta.env.VITE_API_BASE ?? "http://127.0.0.1:4000";
+import { useProject } from "./hooks/useProject.js";
 
-type ClarificationDrafts = Partial<Record<SlotKey, string>>;
+const STATUS_LABELS: Record<ProjectStatus, string> = {
+  draft: "Ready",
+  clarifying: "Needs details",
+  planning: "Planning",
+  awaiting_approval: "Awaiting approval",
+  running: "Running preview",
+  repairing: "Repairing",
+  ready: "Preview live",
+  failed: "Failed",
+  error: "Action needed",
+};
 
-async function api<T>(path: string, init?: RequestInit): Promise<T> {
-  const headers = new Headers(init?.headers);
-  if (init?.body !== undefined && !headers.has("content-type")) {
-    headers.set("content-type", "application/json");
+function formatMessageTime(timestamp: string) {
+  try {
+    return new Intl.DateTimeFormat("en", {
+      hour: "numeric",
+      minute: "2-digit",
+    }).format(new Date(timestamp));
+  } catch {
+    return "";
+  }
+}
+
+function summarizePreviewState(status?: string, lastLog?: string) {
+  if (status === "ready") {
+    return "Preview is live and synced with the latest confirmed version.";
+  }
+  if (status === "starting" || status === "running") {
+    return "The runner is installing dependencies, fixing build issues, and preparing the app preview.";
+  }
+  if (status === "error") {
+    return lastLog ?? "The last preview attempt failed.";
+  }
+  return "Send a prompt on the left, confirm the generated changes, and the preview will appear here.";
+}
+
+function formatPhaseLabel(phase?: string) {
+  if (!phase) {
+    return "Preparing the next step";
   }
 
-  const response = await fetch(`${API_BASE}${path}`, {
-    ...init,
-    headers,
-  });
+  return phase
+    .split("_")
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+}
 
-  if (!response.ok) {
-    const text = await response.text();
-    throw new Error(text || `Request failed with ${response.status}`);
-  }
-
-  return (await response.json()) as T;
+function MessageBubble({ message }: { message: ChatMessage }) {
+  return (
+    <article className={`chat-bubble ${message.role === "user" ? "chat-bubble-user" : "chat-bubble-assistant"}`}>
+      <div className="bubble-meta">
+        <span className="bubble-role">{message.role === "user" ? "You" : "Agent"}</span>
+        <span className="bubble-time">{formatMessageTime(message.createdAt)}</span>
+      </div>
+      <p>{message.content}</p>
+    </article>
+  );
 }
 
 export default function App() {
-  const [project, setProject] = useState<ProjectRecord | null>(null);
-  const [messageDraft, setMessageDraft] = useState("");
-  const [clarificationDrafts, setClarificationDrafts] = useState<ClarificationDrafts>({});
-  const [logs, setLogs] = useState<string[]>([]);
-  const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
+  const {
+    project,
+    logs,
+    error,
+    busy,
+    createProject,
+    sendMessage,
+    confirmGeneration,
+  } = useProject();
 
-  useEffect(() => {
-    void createProject();
-  }, []);
+  const [draft, setDraft] = useState("");
+  const scrollRef = useRef<HTMLDivElement | null>(null);
 
-  useEffect(() => {
-    if (!project) {
-      return;
-    }
-
-    const source = new EventSource(`${API_BASE}/projects/${project.id}/stream`);
-
-    const handleProjectEvent = (event: MessageEvent<string>) => {
-      const payload = JSON.parse(event.data) as ProjectEvent;
-      const maybeProject = payload.payload.project as ProjectRecord | undefined;
-      const maybeMessage = payload.payload.message as string | undefined;
-
-      if (maybeProject) {
-        setProject(maybeProject);
-      }
-      if (maybeMessage) {
-        setLogs((current) => [...current.slice(-79), maybeMessage.trimEnd()]);
-      }
-    };
-
-    [
-      "project.created",
-      "project.updated",
-      "project.plan_ready",
-      "project.preview_ready",
-      "project.preview_log",
-      "project.error",
-    ].forEach((eventName) => source.addEventListener(eventName, handleProjectEvent as EventListener));
-
-    source.onerror = () => {
-      setLogs((current) => [...current.slice(-79), "SSE disconnected, waiting for reconnect..."]);
-    };
-
-    return () => {
-      source.close();
-    };
-  }, [project?.id]);
-
-  const currentQuestions = project?.session.clarificationQuestions ?? [];
-  const readyToConfirm = project?.status === "ready_for_confirmation";
-  const previewUrl = project?.preview.url;
-  const lastAssistantSummary = project?.session.assistantSummary;
   const mode = project?.reasoningMode ?? "plan_solve";
-
-  const timeline = useMemo(() => {
-    if (!project) {
-      return [];
+  const previewUrl = project?.preview.url;
+  const readyToConfirm = project?.status === "awaiting_approval";
+  const clarificationDecision = project?.session.clarificationDecision;
+  const clarificationQuestions = clarificationDecision?.questions ?? [];
+  const messages = project?.session.messages ?? [];
+  const latestLog = logs[logs.length - 1];
+  const latestRun = project?.latestRun;
+  const isGenerating =
+    latestRun?.status === "queued" ||
+    latestRun?.status === "in_progress" ||
+    latestRun?.status === "running" ||
+    project?.status === "running" ||
+    project?.status === "repairing";
+  const showPreviewOverlay = isGenerating || (!previewUrl && busy);
+  const composerButtonLabel = readyToConfirm ? "Confirm" : "Send";
+  const composerHint = readyToConfirm
+    ? "The draft is ready. Confirm to write files, verify the build, and launch the preview."
+    : clarificationQuestions.length > 0
+      ? "Reply naturally in chat with the missing details. No separate form is needed."
+      : busy
+        ? "Generating the app, verifying the build, or repairing the current run."
+        : "Describe what you want to build in one natural prompt, then keep chatting normally.";
+  const conversation = useMemo(() => {
+    if (messages.length) {
+      return messages;
     }
-    return [...project.session.messages].slice(-12);
-  }, [project]);
 
-  async function createProject() {
-    try {
-      const response = await api<{ project: ProjectRecord }>("/projects", {
-        method: "POST",
-        body: JSON.stringify({ name: "New vibe project" }),
-      });
-      setProject(response.project);
-      setLogs([]);
-      setError(null);
-    } catch (issue) {
-      setError(issue instanceof Error ? issue.message : "Unable to create a project.");
+    return [
+      {
+        id: "welcome",
+        role: "assistant" as const,
+        content:
+          "Describe the app you want to build, and I will clarify missing details, plan the work, generate the code, and prepare a preview for approval.",
+        createdAt: new Date().toISOString(),
+      },
+    ];
+  }, [messages]);
+
+  useEffect(() => {
+    const element = scrollRef.current;
+    if (!element) {
+      return;
     }
+    element.scrollTop = element.scrollHeight;
+  }, [conversation, busy, latestRun?.status, latestRun?.phase, readyToConfirm]);
+
+  function handleNewChat() {
+    setDraft("");
+    void createProject();
   }
 
-  async function sendMessage() {
-    if (!project || !messageDraft.trim()) {
+  function handleSend() {
+    if (readyToConfirm) {
+      void confirmGeneration();
       return;
     }
 
-    setBusy(true);
-    setError(null);
-    try {
-      const response = await api<{ project: ProjectRecord }>(`/projects/${project.id}/messages`, {
-        method: "POST",
-        body: JSON.stringify({
-          content: messageDraft.trim(),
-          reasoningMode: mode,
-        }),
-      });
-      setProject(response.project);
-      setMessageDraft("");
-    } catch (issue) {
-      setError(issue instanceof Error ? issue.message : "Unable to send the message.");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function submitClarifications() {
-    if (!project) {
+    if (!draft.trim()) {
       return;
     }
 
-    setBusy(true);
-    setError(null);
-    try {
-      const response = await api<{ project: ProjectRecord }>(`/projects/${project.id}/messages`, {
-        method: "POST",
-        body: JSON.stringify({
-          clarificationAnswers: clarificationDrafts,
-          reasoningMode: mode,
-        }),
-      });
-      setProject(response.project);
-      setClarificationDrafts({});
-    } catch (issue) {
-      setError(issue instanceof Error ? issue.message : "Unable to submit clarification answers.");
-    } finally {
-      setBusy(false);
-    }
+    const content = draft.trim();
+    setDraft("");
+    void sendMessage(content, mode);
   }
 
-  async function confirmGeneration() {
-    if (!project) {
-      return;
+  function handleComposerKeyDown(event: React.KeyboardEvent<HTMLTextAreaElement>) {
+    if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
+      event.preventDefault();
+      handleSend();
     }
-
-    setBusy(true);
-    setError(null);
-    try {
-      const response = await api<{ project: ProjectRecord }>(`/projects/${project.id}/confirm`, {
-        method: "POST",
-      });
-      setProject(response.project);
-    } catch (issue) {
-      setError(issue instanceof Error ? issue.message : "Unable to confirm generation.");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function changeMode(nextMode: ReasoningMode) {
-    if (!project) {
-      return;
-    }
-
-    const response = await api<{ project: ProjectRecord }>(`/projects/${project.id}/mode`, {
-      method: "POST",
-      body: JSON.stringify({ reasoningMode: nextMode }),
-    });
-    setProject(response.project);
   }
 
   return (
-    <div className="app-shell">
-      <aside className="control-panel">
-        <div className="hero-block">
-          <p className="eyebrow">Vide coding playground</p>
-          <h1>Plan, clarify, generate, approve, preview.</h1>
-          <p className="hero-copy">
-            This console surfaces the full state of the vibe coding agent so we can inspect every step of the
-            generation pipeline.
-          </p>
+    <div className="studio-shell">
+      <section className="chat-column">
+        <header className="chat-header">
+          <div className="brand-lockup">
+            <div className="brand-mark" />
+            <div>
+              <p className="brand-eyebrow">Coding Agent</p>
+              <h1>Build with chat</h1>
+            </div>
+          </div>
+
+          <div className="chat-header-actions">
+            <span className={`status-chip status-${project?.status ?? "draft"}`}>
+              {STATUS_LABELS[project?.status ?? "draft"]}
+            </span>
+            <button type="button" className="ghost-button" onClick={handleNewChat}>
+              New chat
+            </button>
+          </div>
+        </header>
+
+        <div className="chat-scroll">
+          <div className="chat-stream" ref={scrollRef}>
+            {conversation.map((message) => (
+              <MessageBubble key={message.id} message={message} />
+            ))}
+
+            {error ? (
+              <section className="workflow-card workflow-card-error">
+                <div className="workflow-card-header">
+                  <h2>Request failed</h2>
+                </div>
+                <p>{error}</p>
+              </section>
+            ) : null}
+          </div>
         </div>
 
-        <section className="panel">
-          <div className="section-title">
-            <h2>Session</h2>
-            <button type="button" className="ghost" onClick={() => void createProject()}>
-              New Project
+        <footer className="composer-panel">
+          <div className="composer-meta">
+            <span>{project ? `Project ${project.id.slice(0, 8)}` : "Preparing session"}</span>
+            <span>{readyToConfirm ? "Ready for confirmation" : busy ? "Agent is working..." : "Press Enter to send"}</span>
+          </div>
+
+          <div className="composer-box">
+            {latestRun ? (
+              <div className={`composer-status ${showPreviewOverlay ? "composer-status-live" : ""}`}>
+                <span className="composer-status-label">
+                  {showPreviewOverlay ? "Generating" : readyToConfirm ? "Ready" : "Latest run"}
+                </span>
+                <strong>{formatPhaseLabel(latestRun.phase)}</strong>
+              </div>
+            ) : null}
+            <textarea
+              value={draft}
+              onChange={(event) => setDraft(event.target.value)}
+              onKeyDown={handleComposerKeyDown}
+              placeholder={
+                readyToConfirm
+                  ? "Confirm the prepared draft to start writing files and launching the preview."
+                  : "Describe the app you want to generate or reply with more details."
+              }
+              rows={4}
+              disabled={readyToConfirm}
+            />
+
+            <div className="composer-actions">
+              <p className="composer-hint">{composerHint}</p>
+              <button type="button" onClick={handleSend} disabled={busy || (!readyToConfirm && !draft.trim())}>
+                {composerButtonLabel}
+              </button>
+            </div>
+          </div>
+        </footer>
+      </section>
+
+      <section className="preview-column">
+        <header className="preview-header">
+          <div className="preview-tabs">
+            <button type="button" className="preview-tab preview-tab-active">
+              Preview
             </button>
           </div>
-          <label className="stacked">
-            <span>Reasoning mode</span>
-            <select value={mode} onChange={(event) => void changeMode(event.target.value as ReasoningMode)}>
-              <option value="plan_solve">plan_solve</option>
-              <option value="react">react</option>
-            </select>
-          </label>
-          <div className="meta-grid">
-            <div>
-              <span>Status</span>
-              <strong>{project?.status ?? "booting"}</strong>
-            </div>
-            <div>
-              <span>Version</span>
-              <strong>v{project?.session.versionNumber ?? 0}</strong>
-            </div>
+
+          <div className="preview-header-actions">
+            <span className={`preview-badge preview-${project?.preview.status ?? "idle"}`}>
+              {project?.preview.status ?? "idle"}
+            </span>
+            {previewUrl ? (
+              <a href={previewUrl} target="_blank" rel="noreferrer" className="preview-link">
+                Open
+              </a>
+            ) : null}
           </div>
-          {lastAssistantSummary ? <p className="summary">{lastAssistantSummary}</p> : null}
-        </section>
+        </header>
 
-        <section className="panel">
-          <div className="section-title">
-            <h2>Prompt</h2>
-          </div>
-          <textarea
-            value={messageDraft}
-            onChange={(event) => setMessageDraft(event.target.value)}
-            placeholder="Describe the app you want to generate or the change you want to make."
-            rows={7}
-          />
-          <button type="button" onClick={() => void sendMessage()} disabled={busy || !messageDraft.trim()}>
-            Send to agent
-          </button>
-        </section>
+        <div className="preview-stage">
+          <div className="preview-frame-shell">
+            {previewUrl ? <iframe title="Generated preview" src={previewUrl} /> : null}
 
-        {currentQuestions.length ? (
-          <section className="panel accent">
-            <div className="section-title">
-              <h2>Clarifications</h2>
-            </div>
-            {currentQuestions.map((question) => (
-              <label key={question.key} className="stacked">
-                <span>{question.question}</span>
-                <input
-                  value={clarificationDrafts[question.key] ?? ""}
-                  placeholder={question.placeholder}
-                  onChange={(event) =>
-                    setClarificationDrafts((current) => ({
-                      ...current,
-                      [question.key]: event.target.value,
-                    }))
-                  }
-                />
-              </label>
-            ))}
-            <button type="button" onClick={() => void submitClarifications()} disabled={busy}>
-              Submit answers
-            </button>
-          </section>
-        ) : null}
-
-        {readyToConfirm ? (
-          <section className="panel success">
-            <div className="section-title">
-              <h2>Approval gate</h2>
-            </div>
-            <p>The agent has prepared file changes and an execution manifest. Confirm to write files and run preview.</p>
-            <button type="button" onClick={() => void confirmGeneration()} disabled={busy}>
-              Confirm generation
-            </button>
-          </section>
-        ) : null}
-
-        {error ? <section className="panel error-panel">{error}</section> : null}
-      </aside>
-
-      <main className="workspace">
-        <section className="workspace-grid">
-          <article className="panel feed">
-            <div className="section-title">
-              <h2>Conversation</h2>
-            </div>
-            <div className="message-list">
-              {timeline.map((item) => (
-                <div key={item.id} className={`message ${item.role}`}>
-                  <span>{item.role}</span>
-                  <p>{item.content}</p>
+            {!previewUrl ? (
+              <div className={`preview-placeholder ${showPreviewOverlay ? "preview-placeholder-live" : ""}`}>
+                <div className="preview-placeholder-visual">
+                  <div className="signal signal-left" />
+                  <div className="signal signal-right" />
+                  <div className="signal-card signal-card-back" />
+                  <div className="signal-card signal-card-mid" />
+                  <div className="signal-card signal-card-front" />
                 </div>
-              ))}
-            </div>
-          </article>
 
-          <article className="panel">
-            <div className="section-title">
-              <h2>Plan</h2>
-            </div>
-            <ul className="bullets">
-              {project?.session.planSteps.length ? (
-                project.session.planSteps.map((step) => (
-                  <li key={step.id}>
-                    <strong>{step.title}</strong>
-                    <span>{step.detail}</span>
-                  </li>
-                ))
-              ) : (
-                <li>
-                  <strong>Waiting for a prompt</strong>
-                  <span>The agent will surface the normalized plan here.</span>
-                </li>
-              )}
-            </ul>
-          </article>
+                <div className="preview-placeholder-copy">
+                  <span>{showPreviewOverlay ? "Generating preview" : "Live preview"}</span>
+                  <h2>{showPreviewOverlay ? "Rendering the next version" : "Preview is standing by"}</h2>
+                  <p>{summarizePreviewState(project?.preview.status, latestLog ?? project?.preview.lastLog)}</p>
+                </div>
+              </div>
+            ) : null}
 
-          <article className="panel">
-            <div className="section-title">
-              <h2>File changes</h2>
-            </div>
-            <ul className="bullets">
-              {project?.session.fileChangeSummary.length ? (
-                project.session.fileChangeSummary.map((item) => (
-                  <li key={item}>
-                    <strong>Pending write</strong>
-                    <span>{item}</span>
-                  </li>
-                ))
-              ) : (
-                <li>
-                  <strong>No pending file changes</strong>
-                  <span>Once the agent prepares a version, the summary shows up here.</span>
-                </li>
-              )}
-            </ul>
-          </article>
+            {showPreviewOverlay ? (
+              <div className="preview-overlay">
+                <div className="preview-overlay-card">
+                  <div className="preview-overlay-header">
+                    <span className="preview-overlay-badge">Generating</span>
+                    <strong>{formatPhaseLabel(latestRun?.phase)}</strong>
+                  </div>
 
-          <article className="panel">
-            <div className="section-title">
-              <h2>Versions</h2>
-            </div>
-            <ul className="bullets">
-              {project?.versions.length ? (
-                project.versions
-                  .slice()
-                  .reverse()
-                  .map((version) => (
-                    <li key={version.id}>
-                      <strong>v{version.number}</strong>
-                      <span>{version.summary}</span>
-                    </li>
-                  ))
-              ) : (
-                <li>
-                  <strong>No snapshots yet</strong>
-                  <span>Approving a generated plan creates the first workspace version.</span>
-                </li>
-              )}
-            </ul>
-          </article>
-        </section>
+                  <div className="preview-overlay-bars" aria-hidden="true">
+                    <span />
+                    <span />
+                    <span />
+                  </div>
 
-        <section className="panel preview-panel">
-          <div className="section-title">
-            <h2>Preview</h2>
-            <span>{previewUrl ?? "No preview running"}</span>
+                  <p>
+                    {latestRun?.phase === "execute_dispatch"
+                      ? "Writing files, verifying the build, and warming up the preview."
+                      : "Planning, generating code, and preparing the preview in the background."}
+                  </p>
+                </div>
+              </div>
+            ) : null}
           </div>
-          {previewUrl ? <iframe title="Generated preview" src={previewUrl} /> : <div className="preview-empty">Preview output will appear here after confirmation and runner startup.</div>}
-        </section>
-
-        <section className="panel logs-panel">
-          <div className="section-title">
-            <h2>Runner logs</h2>
-          </div>
-          <pre>{logs.length ? logs.join("\n") : "No runner logs yet."}</pre>
-        </section>
-      </main>
+        </div>
+      </section>
     </div>
   );
 }
