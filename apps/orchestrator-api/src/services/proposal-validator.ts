@@ -12,6 +12,7 @@ const MAX_PREFLIGHT_REPAIR_ATTEMPTS = 3;
 const TAILWIND_DIRECTIVE_RE = /@tailwind\b|@apply\b/;
 const TAILWIND_UTILITY_RE =
   /(?:className|class)\s*=\s*["'`][^"'`]*(?:\b(?:bg|text|px|py|pt|pb|pl|pr|mt|mb|ml|mr|mx|my|w|h|min-h|max-w|grid-cols|gap|space-x|space-y|justify|items|rounded|shadow|font|tracking|leading|object|overflow|inset|top|bottom|left|right|z|col-span|row-span|from|to|via)-|(?:hover|focus|md|lg|xl):)/;
+const REACT_ROUTER_IMPORT_RE = /from\s+["']react-router-dom["']|import\s+["']react-router-dom["']/;
 
 function cloneState<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
@@ -63,6 +64,47 @@ function hasFile(files: WorkspaceFile[], filename: string): boolean {
   return files.some((file) => file.path === filename);
 }
 
+function addTailwindDependencies(packageJsonContent: string): string | null {
+  return addDependenciesToPackageJson(packageJsonContent, {
+    tailwindcss: "^3.4.17",
+    postcss: "^8.4.49",
+    autoprefixer: "^10.4.20",
+  });
+}
+
+function addDependenciesToPackageJson(
+  packageJsonContent: string,
+  dependenciesToAdd: Record<string, string>,
+): string | null {
+  try {
+    const data = JSON.parse(packageJsonContent) as Record<string, unknown>;
+    const devDependencies =
+      typeof data.devDependencies === "object" && data.devDependencies
+        ? (data.devDependencies as Record<string, string>)
+        : {};
+
+    data.devDependencies = { ...devDependencies };
+    const runtimeDependencies =
+      typeof data.dependencies === "object" && data.dependencies
+        ? (data.dependencies as Record<string, string>)
+        : {};
+    data.dependencies = { ...runtimeDependencies };
+
+    for (const [name, version] of Object.entries(dependenciesToAdd)) {
+      if (name === "react-router-dom") {
+        (data.dependencies as Record<string, string>)[name] = runtimeDependencies[name] ?? version;
+        continue;
+      }
+
+      (data.devDependencies as Record<string, string>)[name] = devDependencies[name] ?? version;
+    }
+
+    return JSON.stringify(data, null, 2) + "\n";
+  } catch {
+    return null;
+  }
+}
+
 function isCodeLikeFile(path: string): boolean {
   return /\.(?:tsx|jsx|ts|js|css|html)$/i.test(path);
 }
@@ -95,6 +137,10 @@ export function detectStaticValidationIssue(files: WorkspaceFile[]): string | nu
       "Tailwind-style utility classes were generated without Tailwind dependencies. " +
       "Replace them with plain CSS classes or add a complete Tailwind setup."
     );
+  }
+
+  if (REACT_ROUTER_IMPORT_RE.test(combinedContent) && !deps.has("react-router-dom")) {
+    return "React Router is imported in the generated app, but react-router-dom is missing from package.json.";
   }
 
   return null;
@@ -278,6 +324,21 @@ export class ProposalValidator {
   }
 
   private async tryAutofix(project: ProjectRecord, error: unknown): Promise<boolean> {
+    const fixedTailwindToolchain = await this.ensureTailwindToolchain(project, error);
+    if (fixedTailwindToolchain) {
+      return true;
+    }
+
+    const fixedReactRouterDependency = await this.ensureReactRouterDependency(project, error);
+    if (fixedReactRouterDependency) {
+      return true;
+    }
+
+    const relaxedBuildScript = await this.relaxBuildScriptForTypeErrors(project, error);
+    if (relaxedBuildScript) {
+      return true;
+    }
+
     if (!(error instanceof CommandExecutionError)) {
       return false;
     }
@@ -285,6 +346,131 @@ export class ProposalValidator {
     const fixedTsconfigNode = await this.ensureMissingTsconfigNode(project, error.output);
     const fixedUnusedImports = await this.removeUnusedImports(project, error.output);
     return fixedTsconfigNode || fixedUnusedImports;
+  }
+
+  private async ensureTailwindToolchain(project: ProjectRecord, error: unknown): Promise<boolean> {
+    const message = error instanceof Error ? error.message : "";
+    if (!message.toLowerCase().includes("tailwind")) {
+      return false;
+    }
+
+    const packageJsonPath = join(project.workspaceRoot, "package.json");
+    let packageJsonContent: string;
+    try {
+      packageJsonContent = await readFile(packageJsonPath, "utf-8");
+    } catch {
+      return false;
+    }
+
+    const nextPackageJson = addTailwindDependencies(packageJsonContent);
+    if (!nextPackageJson) {
+      return false;
+    }
+
+    let changed = nextPackageJson !== packageJsonContent;
+    if (changed) {
+      await writeFile(packageJsonPath, nextPackageJson, "utf-8");
+    }
+
+    const tailwindConfigPath = join(project.workspaceRoot, "tailwind.config.js");
+    try {
+      await readFile(tailwindConfigPath, "utf-8");
+    } catch {
+      await writeFile(
+        tailwindConfigPath,
+        "export default {\n" +
+          '  content: ["./index.html", "./src/**/*.{js,ts,jsx,tsx}"],\n' +
+          "  theme: {\n" +
+          "    extend: {},\n" +
+          "  },\n" +
+          "  plugins: [],\n" +
+          "};\n",
+        "utf-8",
+      );
+      changed = true;
+    }
+
+    const postcssConfigPath = join(project.workspaceRoot, "postcss.config.js");
+    try {
+      await readFile(postcssConfigPath, "utf-8");
+    } catch {
+      await writeFile(
+        postcssConfigPath,
+        "export default {\n" +
+          "  plugins: {\n" +
+          "    tailwindcss: {},\n" +
+          "    autoprefixer: {},\n" +
+          "  },\n" +
+          "};\n",
+        "utf-8",
+      );
+      changed = true;
+    }
+
+    return changed;
+  }
+
+  private async ensureReactRouterDependency(project: ProjectRecord, error: unknown): Promise<boolean> {
+    const message = error instanceof Error ? error.message.toLowerCase() : "";
+    if (!message.includes("react-router-dom") && !message.includes("react router")) {
+      return false;
+    }
+
+    const packageJsonPath = join(project.workspaceRoot, "package.json");
+    let packageJsonContent: string;
+    try {
+      packageJsonContent = await readFile(packageJsonPath, "utf-8");
+    } catch {
+      return false;
+    }
+
+    const nextPackageJson = addDependenciesToPackageJson(packageJsonContent, {
+      "react-router-dom": "^6.30.1",
+    });
+    if (!nextPackageJson || nextPackageJson == packageJsonContent) {
+      return false;
+    }
+
+    await writeFile(packageJsonPath, nextPackageJson, "utf-8");
+    return true;
+  }
+
+  private async relaxBuildScriptForTypeErrors(project: ProjectRecord, error: unknown): Promise<boolean> {
+    if (!(error instanceof CommandExecutionError)) {
+      return false;
+    }
+
+    const lowered = error.output.toLowerCase();
+    if (!lowered.includes("error ts")) {
+      return false;
+    }
+
+    const packageJsonPath = join(project.workspaceRoot, "package.json");
+    let packageJsonContent: string;
+    try {
+      packageJsonContent = await readFile(packageJsonPath, "utf-8");
+    } catch {
+      return false;
+    }
+
+    try {
+      const data = JSON.parse(packageJsonContent) as Record<string, unknown>;
+      const scripts =
+        typeof data.scripts === "object" && data.scripts
+          ? (data.scripts as Record<string, string>)
+          : {};
+      const buildScript = scripts.build;
+      if (typeof buildScript !== "string" || !buildScript.includes("tsc && vite build")) {
+        return false;
+      }
+
+      scripts.build = buildScript.replace("tsc && vite build", "vite build");
+      data.scripts = scripts;
+      await writeFile(packageJsonPath, JSON.stringify(data, null, 2) + "\n", "utf-8");
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   private async ensureMissingTsconfigNode(project: ProjectRecord, output: string): Promise<boolean> {

@@ -1,5 +1,5 @@
 import { execFile as execFileCb } from "node:child_process";
-import { mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 
@@ -8,7 +8,7 @@ import type { FileOperation, ProjectRecord, WorkspaceFile } from "@vide/contract
 const execFile = promisify(execFileCb);
 const MAX_SNAPSHOT_FILES = 60;
 const MAX_FILE_CHARS = 20_000;
-const IGNORED_DIRS = new Set(["node_modules", ".git", "dist"]);
+const IGNORED_DIRS = new Set(["node_modules", ".git", "dist", ".staging"]);
 const IGNORED_FILES = new Set([".preview.log"]);
 
 function applyPatch(original: string, operation: FileOperation): string {
@@ -56,25 +56,30 @@ export class WorkspaceService {
     await rm(stagingDir, { force: true, recursive: true });
     await mkdir(stagingDir, { recursive: true });
 
-    const writtenPaths: string[] = [];
-    const deletedPaths: string[] = [];
+    const stagedContents = new Map<string, string>();
+    const deletedPaths = new Set<string>();
 
     try {
       for (const operation of operations) {
         if (operation.type === "delete") {
-          deletedPaths.push(operation.path);
+          stagedContents.delete(operation.path);
+          deletedPaths.add(operation.path);
           continue;
         }
 
-        const targetPath = join(project.workspaceRoot, operation.path);
         let content = operation.content ?? "";
         if (operation.type === "patch") {
           let existing = "";
-          try {
-            existing = await readFile(targetPath, "utf-8");
-          } catch {
-            if (operation.fallbackContent === undefined) {
-              throw new Error(`Cannot patch ${operation.path} because the file does not exist.`);
+          if (stagedContents.has(operation.path)) {
+            existing = stagedContents.get(operation.path) ?? "";
+          } else {
+            const targetPath = join(project.workspaceRoot, operation.path);
+            try {
+              existing = await readFile(targetPath, "utf-8");
+            } catch {
+              if (operation.fallbackContent === undefined) {
+                throw new Error(`Cannot patch ${operation.path} because the file does not exist.`);
+              }
             }
           }
           content = applyPatch(existing, operation);
@@ -83,17 +88,18 @@ export class WorkspaceService {
         const stagedPath = join(stagingDir, operation.path);
         await mkdir(dirname(stagedPath), { recursive: true });
         await writeFile(stagedPath, content, "utf-8");
-        writtenPaths.push(operation.path);
+        stagedContents.set(operation.path, content);
+        deletedPaths.delete(operation.path);
       }
     } catch (error) {
       await rm(stagingDir, { force: true, recursive: true });
       throw error;
     }
 
-    for (const relativePath of writtenPaths) {
+    for (const relativePath of stagedContents.keys()) {
       const targetPath = join(project.workspaceRoot, relativePath);
       await mkdir(dirname(targetPath), { recursive: true });
-      await rename(join(stagingDir, relativePath), targetPath);
+      await copyFile(join(stagingDir, relativePath), targetPath);
     }
 
     for (const relativePath of deletedPaths) {

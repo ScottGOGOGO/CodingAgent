@@ -126,3 +126,28 @@ def test_find_placeholder_paths_blocks_user_facing_video_placeholder_copy() -> N
     )
 
     assert strategy._find_placeholder_paths(state.file_operations) == ["src/pages/DrillDetail.tsx"]
+
+
+def test_find_placeholder_paths_ignores_patch_search_when_replacement_removes_placeholder() -> None:
+    strategy = PlanSolveStrategy()
+    state = AgentSessionState(
+        sessionId="session-1",
+        projectId="project-1",
+        reasoningMode=ReasoningMode.PLAN_SOLVE,
+        status=ProjectStatus.PLANNING,
+        fileOperations=[
+            {
+                "type": "patch",
+                "path": "src/App.tsx",
+                "summary": "Replace placeholder copy",
+                "hunks": [
+                    {
+                        "search": "[Video placeholder: Serve demo]",
+                        "replace": "Video lesson focus: Serve demo",
+                    }
+                ],
+            }
+        ],
+    )
+
+    assert strategy._find_placeholder_paths(state.file_operations) == []

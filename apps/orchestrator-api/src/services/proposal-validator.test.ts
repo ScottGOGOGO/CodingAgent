@@ -1,9 +1,48 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import type { WorkspaceFile } from "@vide/contracts";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
-import { detectStaticValidationIssue } from "./proposal-validator.js";
+import type { ProjectRecord, WorkspaceFile } from "@vide/contracts";
+
+import { detectStaticValidationIssue, ProposalValidator } from "./proposal-validator.js";
+import { CommandExecutionError } from "../runner.js";
+
+function makeProject(workspaceRoot: string): ProjectRecord {
+  const now = new Date().toISOString();
+  return {
+    id: "project-1",
+    name: "Tailwind Repair Project",
+    createdAt: now,
+    updatedAt: now,
+    workspaceRoot,
+    reasoningMode: "plan_solve",
+    status: "draft",
+    preview: {
+      status: "idle",
+      updatedAt: now,
+    },
+    currentSessionId: "session-1",
+    session: {
+      sessionId: "session-1",
+      projectId: "project-1",
+      reasoningMode: "plan_solve",
+      messages: [],
+      workingSpec: {},
+      status: "draft",
+      planSteps: [],
+      fileChangeSummary: [],
+      fileOperations: [],
+      executionManifest: [],
+      versionNumber: 0,
+      assumptions: [],
+      lastContextPaths: [],
+    },
+    versions: [],
+  };
+}
 
 test("detectStaticValidationIssue flags tailwind directives without toolchain", () => {
   const files: WorkspaceFile[] = [
@@ -51,4 +90,144 @@ test("detectStaticValidationIssue ignores plain CSS apps without tailwind usage"
   ];
 
   assert.equal(detectStaticValidationIssue(files), null);
+});
+
+test("detectStaticValidationIssue flags missing react-router-dom dependency", () => {
+  const files: WorkspaceFile[] = [
+    {
+      path: "package.json",
+      content: JSON.stringify({
+        dependencies: {
+          react: "^18.3.1",
+          "react-dom": "^18.3.1",
+        },
+      }),
+    },
+    {
+      path: "src/App.tsx",
+      content: "import { Routes, Route } from 'react-router-dom';\nexport default function App() { return <Routes />; }\n",
+    },
+  ];
+
+  assert.match(detectStaticValidationIssue(files) ?? "", /react-router-dom/i);
+});
+
+test("ensureTailwindToolchain adds the missing dependencies and config files", async () => {
+  const workspaceRoot = await mkdtemp(join(tmpdir(), "vide-tailwind-autofix-"));
+  const validator = new ProposalValidator({} as never, {} as never, {} as never);
+  const project = makeProject(workspaceRoot);
+
+  try {
+    await writeFile(
+      join(workspaceRoot, "package.json"),
+      JSON.stringify(
+        {
+          name: "demo",
+          private: true,
+          devDependencies: {
+            vite: "^5.0.0",
+          },
+        },
+        null,
+        2,
+      ) + "\n",
+      "utf-8",
+    );
+
+    const changed = await (validator as any).ensureTailwindToolchain(
+      project,
+      new Error("Tailwind directives were generated without the full Tailwind toolchain."),
+    );
+
+    assert.equal(changed, true);
+
+    const packageJson = await readFile(join(workspaceRoot, "package.json"), "utf-8");
+    assert.match(packageJson, /"tailwindcss": "\^3\.4\.17"/);
+    assert.match(packageJson, /"postcss": "\^8\.4\.49"/);
+    assert.match(packageJson, /"autoprefixer": "\^10\.4\.20"/);
+
+    const tailwindConfig = await readFile(join(workspaceRoot, "tailwind.config.js"), "utf-8");
+    assert.match(tailwindConfig, /content/);
+
+    const postcssConfig = await readFile(join(workspaceRoot, "postcss.config.js"), "utf-8");
+    assert.match(postcssConfig, /tailwindcss/);
+  } finally {
+    await rm(workspaceRoot, { recursive: true, force: true });
+  }
+});
+
+test("ensureReactRouterDependency adds the missing runtime dependency", async () => {
+  const workspaceRoot = await mkdtemp(join(tmpdir(), "vide-react-router-autofix-"));
+  const validator = new ProposalValidator({} as never, {} as never, {} as never);
+  const project = makeProject(workspaceRoot);
+
+  try {
+    await writeFile(
+      join(workspaceRoot, "package.json"),
+      JSON.stringify(
+        {
+          name: "demo",
+          private: true,
+          dependencies: {
+            react: "^18.3.1",
+            "react-dom": "^18.3.1",
+          },
+        },
+        null,
+        2,
+      ) + "\n",
+      "utf-8",
+    );
+
+    const changed = await (validator as any).ensureReactRouterDependency(
+      project,
+      new Error("React Router is imported in the generated app, but react-router-dom is missing from package.json."),
+    );
+
+    assert.equal(changed, true);
+
+    const packageJson = await readFile(join(workspaceRoot, "package.json"), "utf-8");
+    assert.match(packageJson, /"react-router-dom": "\^6\.30\.1"/);
+  } finally {
+    await rm(workspaceRoot, { recursive: true, force: true });
+  }
+});
+
+test("relaxBuildScriptForTypeErrors removes the tsc gate for TypeScript-only build failures", async () => {
+  const workspaceRoot = await mkdtemp(join(tmpdir(), "vide-build-script-autofix-"));
+  const validator = new ProposalValidator({} as never, {} as never, {} as never);
+  const project = makeProject(workspaceRoot);
+
+  try {
+    await writeFile(
+      join(workspaceRoot, "package.json"),
+      JSON.stringify(
+        {
+          name: "demo",
+          private: true,
+          scripts: {
+            build: "tsc && vite build",
+          },
+        },
+        null,
+        2,
+      ) + "\n",
+      "utf-8",
+    );
+
+    const changed = await (validator as any).relaxBuildScriptForTypeErrors(
+      project,
+      new CommandExecutionError(
+        ["npm", "run", "build"],
+        "src/App.tsx(1,1): error TS6133: 'foo' is declared but its value is never read.",
+      ),
+    );
+
+    assert.equal(changed, true);
+
+    const packageJson = await readFile(join(workspaceRoot, "package.json"), "utf-8");
+    assert.match(packageJson, /"build": "vite build"/);
+  } finally {
+    await rm(workspaceRoot, { recursive: true, force: true });
+  }
 });

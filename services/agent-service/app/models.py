@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 from enum import Enum
-from typing import Dict, List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional
 
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class AppBaseModel(BaseModel):
@@ -106,10 +106,88 @@ class FlowSpec(AppBaseModel):
     success: str = Field(default="", validation_alias=AliasChoices("success", "outcome", "result"))
 
 
+def _stringify_model_value(value: object) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, list):
+        parts = [_stringify_model_value(item) for item in value]
+        return ", ".join(part for part in parts if part)
+    if isinstance(value, dict):
+        named_value = _stringify_named_mapping(value)
+        if named_value:
+            return named_value
+        parts = []
+        for key, item in value.items():
+            text = _stringify_model_value(item)
+            if text:
+                parts.append(f"{key}: {text}")
+        return "; ".join(parts)
+    return str(value).strip()
+
+
+def _stringify_named_mapping(value: Dict[str, Any]) -> str:
+    name = _stringify_model_value(
+        value.get("name")
+        or value.get("title")
+        or value.get("label")
+        or value.get("field")
+        or value.get("key")
+        or value.get("id")
+    )
+    type_name = _stringify_model_value(value.get("type") or value.get("dataType"))
+    description = _stringify_model_value(value.get("description") or value.get("summary") or value.get("notes"))
+
+    if name and type_name:
+        return f"{name} ({type_name})"
+    if name and description:
+        return f"{name}: {description}"
+    if name:
+        return name
+    return ""
+
+
 class DataModelNeed(AppBaseModel):
     entity: str = Field(default="", validation_alias=AliasChoices("entity", "name", "title"))
     fields: List[str] = Field(default_factory=list)
     notes: Optional[str] = Field(default=None, validation_alias=AliasChoices("notes", "description", "summary"))
+
+    @model_validator(mode="before")
+    @classmethod
+    def _coerce_model(cls, value: object) -> object:
+        if isinstance(value, str):
+            text = _stringify_model_value(value)
+            if not text:
+                return {"entity": "", "fields": []}
+
+            if ":" in text:
+                entity, _, remainder = text.partition(":")
+                fields = [item.strip() for item in remainder.split(",") if item.strip()]
+                return {"entity": entity.strip(), "fields": fields}
+
+            return {"entity": text, "fields": []}
+        return value
+
+    @field_validator("entity", "notes", mode="before")
+    @classmethod
+    def _coerce_text(cls, value: object) -> object:
+        if value is None:
+            return value
+        return _stringify_model_value(value)
+
+    @field_validator("fields", mode="before")
+    @classmethod
+    def _coerce_fields(cls, value: object) -> List[str]:
+        if value is None:
+            return []
+        items = value if isinstance(value, list) else [value]
+        normalized: List[str] = []
+        for item in items:
+            text = _stringify_model_value(item)
+            if text:
+                normalized.append(text)
+        return normalized
 
 
 class WorkingSpec(AppBaseModel):
@@ -364,21 +442,25 @@ class StructuredCriticOutput(AppBaseModel):
 
 
 class StructuredPatchHunkOutput(AppBaseModel):
-    search: Optional[str] = None
-    replace: Optional[str] = None
-    occurrence: Optional[int] = 1
+    search: Optional[str] = Field(default=None, validation_alias=AliasChoices("search", "find", "old"))
+    replace: Optional[str] = Field(default=None, validation_alias=AliasChoices("replace", "replacement", "new"))
+    occurrence: Optional[int] = Field(default=1, validation_alias=AliasChoices("occurrence", "index"))
 
 
 class StructuredFileOperationOutput(AppBaseModel):
-    type: Optional[str] = Field(default=None, validation_alias=AliasChoices("type", "op"))
-    path: Optional[str] = None
-    summary: Optional[str] = None
-    content: Optional[str] = None
+    type: Optional[str] = Field(default=None, validation_alias=AliasChoices("type", "op", "action", "operation"))
+    path: Optional[str] = Field(default=None, validation_alias=AliasChoices("path", "file", "filePath", "filename", "target"))
+    summary: Optional[str] = Field(default=None, validation_alias=AliasChoices("summary", "description", "reason", "title"))
+    content: Optional[str] = Field(default=None, validation_alias=AliasChoices("content", "code", "newContent", "text"))
     hunks: List[StructuredPatchHunkOutput] = Field(default_factory=list)
-    fallback_content: Optional[str] = Field(default=None, alias="fallbackContent")
-    command: Optional[str] = None
-    search: Optional[str] = None
-    replace: Optional[str] = None
+    fallback_content: Optional[str] = Field(
+        default=None,
+        alias="fallbackContent",
+        validation_alias=AliasChoices("fallbackContent", "fallback_content", "fullContent"),
+    )
+    command: Optional[str] = Field(default=None, validation_alias=AliasChoices("command", "run", "script"))
+    search: Optional[str] = Field(default=None, validation_alias=AliasChoices("search", "find", "old"))
+    replace: Optional[str] = Field(default=None, validation_alias=AliasChoices("replace", "replacement", "new"))
 
 
 class GeneratedCodeOutput(AppBaseModel):

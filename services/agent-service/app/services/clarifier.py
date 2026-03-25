@@ -150,6 +150,7 @@ class DynamicClarifier:
                     "- screens: array of objects with id, name, purpose, elements\n"
                     "- coreFlows: array of objects with id, name, steps, success\n"
                     "- dataModelNeeds: array of objects with entity, fields, notes\n"
+                    "  fields must be string[] and not objects. Example: [\"title (string)\", \"level (enum)\"]\n"
                     "- integrations: string[]\n"
                     "- brandAndVisualDirection: string or null\n"
                     "- constraints: string[]\n"

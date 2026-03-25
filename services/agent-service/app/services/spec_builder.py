@@ -36,7 +36,9 @@ class SpecBuilder:
                     "Working spec:\n{working_spec}\n\n"
                     "Known assumptions:\n{assumptions}\n\n"
                     "Return a JSON object with keys: title, summary, goal, targetUsers, screens, coreFlows, "
-                    "dataModelNeeds, integrations, brandAndVisualDirection, constraints, successCriteria, assumptions.",
+                    "dataModelNeeds, integrations, brandAndVisualDirection, constraints, successCriteria, assumptions.\n"
+                    "For dataModelNeeds.fields, return an array of strings, not objects. "
+                    'Example: ["title (string)", "skillLevel (enum)"].',
                 ),
             ]
         )

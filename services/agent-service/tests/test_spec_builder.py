@@ -66,4 +66,73 @@ def test_build_spec_backfills_missing_screen_purpose_flow_success_and_ids(monkey
     assert spec.core_flows[0].id == "create-itinerary"
     assert spec.core_flows[0].success == "Users can successfully complete create itinerary."
     assert spec.data_model_needs[0].entity == "Location"
+    assert spec.data_model_needs[0].fields == ["name", "district"]
     assert spec.data_model_needs[0].notes == "Top places in Shanghai"
+
+
+def test_build_spec_accepts_object_shaped_data_model_fields(monkeypatch) -> None:
+    builder = SpecBuilder()
+    state = make_state()
+
+    def fake_invoke_structured(**kwargs):
+        return StructuredSpecOutput(
+            title="Basketball Learning Plan",
+            summary="A guided basketball study companion.",
+            goal="Help beginners learn skills and drills.",
+            targetUsers=["Beginner players"],
+            screens=[],
+            coreFlows=[],
+            dataModelNeeds=[
+                {
+                    "entity": "Drill",
+                    "fields": [
+                        {"name": "title", "type": "string"},
+                        {"name": "difficulty", "type": "enum"},
+                    ],
+                    "notes": "Practice library",
+                }
+            ],
+            integrations=[],
+            brandAndVisualDirection="Clean sports coaching board",
+            constraints=[],
+            successCriteria=[],
+            assumptions=[],
+        )
+
+    monkeypatch.setattr(builder, "_invoke_structured", fake_invoke_structured)
+
+    spec = builder.build_spec(state)
+
+    assert spec.data_model_needs[0].fields == ["title (string)", "difficulty (enum)"]
+
+
+def test_build_spec_accepts_string_shaped_data_model_needs(monkeypatch) -> None:
+    builder = SpecBuilder()
+    state = make_state()
+
+    def fake_invoke_structured(**kwargs):
+        return StructuredSpecOutput(
+            title="Basketball Learning Plan",
+            summary="A guided basketball study companion.",
+            goal="Help beginners learn skills and drills.",
+            targetUsers=["Beginner players"],
+            screens=[],
+            coreFlows=[],
+            dataModelNeeds=[
+                "Drill: title (string), difficulty (enum)",
+                "PracticeNote",
+            ],
+            integrations=[],
+            brandAndVisualDirection="Clean sports coaching board",
+            constraints=[],
+            successCriteria=[],
+            assumptions=[],
+        )
+
+    monkeypatch.setattr(builder, "_invoke_structured", fake_invoke_structured)
+
+    spec = builder.build_spec(state)
+
+    assert spec.data_model_needs[0].entity == "Drill"
+    assert spec.data_model_needs[0].fields == ["title (string)", "difficulty (enum)"]
+    assert spec.data_model_needs[1].entity == "PracticeNote"

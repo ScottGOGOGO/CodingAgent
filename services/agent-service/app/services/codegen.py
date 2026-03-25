@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from json import dumps, loads
 from typing import Dict, List, Optional, Tuple
 
@@ -197,7 +198,7 @@ class CodeGenerationService:
         index: int,
         workspace_lookup: Dict[str, str],
     ) -> Optional[FileOperation]:
-        operation_type = (item.type or "").strip().lower()
+        operation_type = self._infer_operation_type(item)
         path = (item.path or "").strip()
         summary = (item.summary or "").strip() or f"Operation {index + 1}"
 
@@ -208,7 +209,12 @@ class CodeGenerationService:
             if not path:
                 return None
             content = item.content if item.content is not None else item.fallback_content
-            return FileOperation(type="write", path=path, summary=summary, content=content or "")
+            return FileOperation(
+                type="write",
+                path=path,
+                summary=summary,
+                content=self._polish_generated_copy(content or ""),
+            )
 
         if operation_type in {"patch", "edit", "update"}:
             if not path:
@@ -227,13 +233,25 @@ class CodeGenerationService:
                     type="patch",
                     path=path,
                     summary=summary,
-                    hunks=hunks,
-                    fallbackContent=item.fallback_content,
+                    hunks=[
+                        PatchHunk(
+                            search=hunk.search,
+                            replace=self._polish_generated_copy(hunk.replace),
+                            occurrence=hunk.occurrence or 1,
+                        )
+                        for hunk in hunks
+                    ],
+                    fallbackContent=self._polish_generated_copy(item.fallback_content) if item.fallback_content is not None else None,
                 )
 
             replacement = item.content if item.content is not None else item.fallback_content
             if replacement is not None:
-                return FileOperation(type="write", path=path, summary=summary, content=replacement)
+                return FileOperation(
+                    type="write",
+                    path=path,
+                    summary=summary,
+                    content=self._polish_generated_copy(replacement),
+                )
             return None
 
         if operation_type == "delete":
@@ -242,6 +260,26 @@ class CodeGenerationService:
             return FileOperation(type="delete", path=path, summary=summary)
 
         return None
+
+    @staticmethod
+    def _infer_operation_type(item: StructuredFileOperationOutput) -> str:
+        operation_type = (item.type or "").strip().lower()
+        if operation_type in {"create", "add", "new", "rewrite", "overwrite", "replace_file"}:
+            return "write"
+        if operation_type in {"edit", "update", "modify", "fix", "rewrite_partial"}:
+            return "patch" if item.hunks or item.search or item.replace is not None else "write"
+        if operation_type in {"remove", "rm"}:
+            return "delete"
+        if operation_type:
+            return operation_type
+
+        if item.command:
+            return "run"
+        if item.path and (item.hunks or item.search or item.replace is not None):
+            return "patch"
+        if item.path and (item.content is not None or item.fallback_content is not None):
+            return "write"
+        return ""
 
     def _normalize_run_operation(
         self,
@@ -331,3 +369,14 @@ class CodeGenerationService:
                 message=f"Generate version {state.version_number + 1}: {title}",
             ),
         ]
+
+    @staticmethod
+    def _polish_generated_copy(value: str) -> str:
+        polished = re.sub(
+            r"\[\s*video placeholder\s*:\s*([^\]]+)\]",
+            r"Video lesson focus: \1",
+            value,
+            flags=re.IGNORECASE,
+        )
+        polished = re.sub(r"\bvideo placeholder\b", "video lesson", polished, flags=re.IGNORECASE)
+        return polished

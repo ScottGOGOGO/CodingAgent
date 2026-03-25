@@ -370,14 +370,13 @@ class StrategyAdapter(ABC):
             getattr(operation, "content", None),
             getattr(operation, "fallback_content", None),
             getattr(operation, "fallbackContent", None),
-            getattr(operation, "search", None),
             getattr(operation, "replace", None),
         ):
             if isinstance(value, str) and value.strip():
                 texts.append(StrategyAdapter._sanitize_operation_text(value))
 
         for hunk in getattr(operation, "hunks", []) or []:
-            for value in (getattr(hunk, "search", None), getattr(hunk, "replace", None)):
+            for value in (getattr(hunk, "replace", None),):
                 if isinstance(value, str) and value.strip():
                     texts.append(StrategyAdapter._sanitize_operation_text(value))
         return texts
