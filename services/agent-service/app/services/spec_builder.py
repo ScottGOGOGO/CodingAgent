@@ -12,9 +12,15 @@ from app.services.json_parser import parse_json_response
 from app.services.model_provider import ModelProvider
 
 
-def slugify(value: str) -> str:
+USER_FACING_LANGUAGE_RULE = (
+    "除非用户明确要求其他语言，所有面向用户的自然语言字段都必须使用简体中文，"
+    "保留 JSON key、文件路径和代码标识符的必要格式。"
+)
+
+
+def slugify(value: str, fallback: str = "generated-app") -> str:
     lowered = re.sub(r"[^a-zA-Z0-9]+", "-", value.strip().lower())
-    return lowered.strip("-") or "generated-app"
+    return lowered.strip("-") or fallback
 
 
 class SpecBuilder:
@@ -28,7 +34,8 @@ class SpecBuilder:
                 (
                     "system",
                     "You normalize a hierarchical product brief into an implementation-ready React + Vite web app spec. "
-                    "Preserve the user's intent, make missing details explicit as assumptions, and return valid JSON only.",
+                    "Preserve the user's intent, make missing details explicit as assumptions, and return valid JSON only. "
+                    f"{USER_FACING_LANGUAGE_RULE}",
                 ),
                 (
                     "human",
@@ -37,6 +44,7 @@ class SpecBuilder:
                     "Known assumptions:\n{assumptions}\n\n"
                     "Return a JSON object with keys: title, summary, goal, targetUsers, screens, coreFlows, "
                     "dataModelNeeds, integrations, brandAndVisualDirection, constraints, successCriteria, assumptions.\n"
+                    "All natural-language values in the JSON must be in Simplified Chinese.\n"
                     "For dataModelNeeds.fields, return an array of strings, not objects. "
                     'Example: ["title (string)", "skillLevel (enum)"].',
                 ),
@@ -49,25 +57,25 @@ class SpecBuilder:
             payload={
                 "messages": dumps([message.model_dump(mode="json", by_alias=True) for message in state.messages], ensure_ascii=False),
                 "working_spec": dumps(state.working_spec.model_dump(mode="json", by_alias=True), ensure_ascii=False),
-                "assumptions": "\n".join(state.assumptions) or "None",
+                "assumptions": "\n".join(state.assumptions) or "无",
             },
         )
         return AppSpec(
-            appName=slugify(self._coalesce_text(result.title, working_spec.title, working_spec.goal, "generated-app")),
-            title=self._coalesce_text(result.title, working_spec.title, working_spec.goal, "Generated App"),
+            appName=slugify(self._coalesce_text(result.title, working_spec.title, working_spec.goal, "generated-app"), fallback="generated-app"),
+            title=self._coalesce_text(result.title, working_spec.title, working_spec.goal, "生成的应用"),
             summary=self._coalesce_text(
                 result.summary,
                 working_spec.summary,
                 result.goal,
                 working_spec.goal,
-                "Implementation-ready web app generated from the latest conversation.",
+                "根据最新对话整理出的可实施 Web 应用方案。",
             ),
             goal=self._coalesce_text(
                 result.goal,
                 working_spec.goal,
                 working_spec.summary,
                 state.messages[-1].content if state.messages else None,
-                "Build a useful web application that fits the user's request.",
+                "构建一个符合用户需求、可直接实现的 Web 应用。",
             ),
             targetUsers=self._normalize_string_list(result.target_users or working_spec.target_users),
             screens=self._normalize_screens(result.screens),
@@ -77,7 +85,7 @@ class SpecBuilder:
             brandAndVisualDirection=self._coalesce_text(
                 result.brand_and_visual_direction,
                 working_spec.brand_and_visual_direction,
-                "Clean, modern, implementation-ready interface direction.",
+                "简洁现代、可直接落地的界面风格方向。",
             ),
             constraints=self._normalize_string_list(result.constraints),
             successCriteria=self._normalize_string_list(result.success_criteria),
@@ -90,7 +98,8 @@ class SpecBuilder:
                 (
                     "system",
                     "You write short execution plans for a commercial coding agent. "
-                    "Return valid JSON only with keys: steps and summary.",
+                    "Return valid JSON only with keys: steps and summary. "
+                    "Unless the user explicitly requests another language, all step text and summary text must be in Simplified Chinese.",
                 ),
                 (
                     "human",
@@ -121,7 +130,7 @@ class SpecBuilder:
         except Exception as exc:
             if isinstance(exc, GenerationFailure):
                 raise
-            raise GenerationFailure(f"Planner model failed while preparing the spec: {exc}") from exc
+            raise GenerationFailure(f"规划模型在整理应用规格时失败：{exc}") from exc
 
     @staticmethod
     def _normalize_string_list(items) -> List[str]:
@@ -179,11 +188,11 @@ class SpecBuilder:
     def _normalize_screens(self, screens: List[ScreenSpec]) -> List[ScreenSpec]:
         normalized: List[ScreenSpec] = []
         for index, screen in enumerate(screens or []):
-            name = self._coalesce_text(screen.name, screen.id, f"Screen {index + 1}")
-            screen_id = slugify(self._coalesce_text(screen.id, name, f"screen-{index + 1}"))
+            name = self._coalesce_text(screen.name, screen.id, f"页面 {index + 1}")
+            screen_id = slugify(self._coalesce_text(screen.id, name, f"screen-{index + 1}"), fallback=f"screen-{index + 1}")
             purpose = self._coalesce_text(
                 screen.purpose,
-                f"Support the {name.lower()} experience.",
+                f"用于支撑{name}的核心使用体验。",
             )
             elements = screen.elements if isinstance(screen.elements, list) else [screen.elements]
             normalized.append(
@@ -199,12 +208,12 @@ class SpecBuilder:
     def _normalize_flows(self, flows: List[FlowSpec]) -> List[FlowSpec]:
         normalized: List[FlowSpec] = []
         for index, flow in enumerate(flows or []):
-            name = self._coalesce_text(flow.name, flow.id, f"Flow {index + 1}")
-            flow_id = slugify(self._coalesce_text(flow.id, name, f"flow-{index + 1}"))
+            name = self._coalesce_text(flow.name, flow.id, f"流程 {index + 1}")
+            flow_id = slugify(self._coalesce_text(flow.id, name, f"flow-{index + 1}"), fallback=f"flow-{index + 1}")
             steps = [str(step).strip() for step in flow.steps if str(step).strip()]
             success = self._coalesce_text(
                 flow.success,
-                f"Users can successfully complete {name.lower()}.",
+                f"用户可以顺利完成{name}。",
             )
             normalized.append(
                 FlowSpec(
@@ -219,7 +228,7 @@ class SpecBuilder:
     def _normalize_data_model_needs(self, items: List[DataModelNeed]) -> List[DataModelNeed]:
         normalized: List[DataModelNeed] = []
         for index, item in enumerate(items or []):
-            entity = self._coalesce_text(item.entity, f"Entity {index + 1}")
+            entity = self._coalesce_text(item.entity, f"实体 {index + 1}")
             fields = [str(field).strip() for field in item.fields if str(field).strip()]
             notes = self._coalesce_text(item.notes)
             normalized.append(

@@ -35,9 +35,51 @@ def test_verify_loop_rejects_placeholder_app_content() -> None:
 
     assert next_state.status == ProjectStatus.ERROR
     assert next_state.error is not None
-    assert "placeholder or TODO UI content" in next_state.error
+    assert "占位或 TODO 界面内容" in next_state.error
     assert next_state.run is not None
     assert next_state.run.status == RunStatus.FAILED
+
+
+def test_verify_loop_rejects_missing_local_import_targets() -> None:
+    strategy = PlanSolveStrategy()
+    state = AgentSessionState(
+        sessionId="session-1",
+        projectId="project-1",
+        reasoningMode=ReasoningMode.PLAN_SOLVE,
+        status=ProjectStatus.PLANNING,
+        fileOperations=[
+            {
+                "type": "write",
+                "path": "src/App.tsx",
+                "summary": "Render routed app",
+                "content": (
+                    "import Home from './components/Home';\n"
+                    "export default function App() {\n"
+                    "  return <Home />;\n"
+                    "}\n"
+                ),
+            }
+        ],
+    )
+
+    result = strategy.verify_loop(
+        {
+            "state": state.as_contract(),
+            "workspace_snapshot": [
+                {"path": "package.json", "content": "{}"},
+                {"path": "index.html", "content": "<!doctype html>"},
+                {"path": "src/main.tsx", "content": "import './App';"},
+            ],
+            "approved": False,
+        }
+    )
+
+    next_state = AgentSessionState.model_validate(result["state"])
+
+    assert next_state.status == ProjectStatus.ERROR
+    assert next_state.error is not None
+    assert "引用了尚未生成的本地文件" in next_state.error
+    assert "src/App.tsx -> ./components/Home" in next_state.error
 
 
 def test_verify_loop_ignores_normal_input_placeholder_props() -> None:

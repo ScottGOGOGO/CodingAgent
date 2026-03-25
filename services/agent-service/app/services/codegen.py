@@ -23,6 +23,13 @@ from app.services.json_parser import parse_json_response
 from app.services.model_provider import ModelProvider
 
 
+USER_FACING_LANGUAGE_RULE = (
+    "除非用户明确要求其他语言，所有面向用户的自然语言内容都必须使用简体中文，"
+    "包括 assistantSummary、operation summary、界面文案、示例内容和可见标签；"
+    "保留 JSON key、文件路径和必要的代码标识符格式。"
+)
+
+
 class CodeGenerationService:
     def __init__(self) -> None:
         self.provider = ModelProvider()
@@ -43,7 +50,7 @@ class CodeGenerationService:
             state,
             generation,
             spec.title,
-            default_summary_prefix=f"Repair {repair_context.attempt} for",
+            default_summary_prefix=f"已完成第 {repair_context.attempt} 轮修复",
         )
 
     def _apply_generation_result(
@@ -51,12 +58,12 @@ class CodeGenerationService:
         state: AgentSessionState,
         generation: GeneratedCodeOutput,
         title: str,
-        default_summary_prefix: str = "Generate",
+        default_summary_prefix: str = "已生成",
     ) -> AgentSessionState:
         operations = generation.operations
         state.file_operations = operations
         state.file_change_summary = [item.summary for item in operations]
-        state.assistant_summary = generation.assistant_summary or f"{default_summary_prefix} {title}"
+        state.assistant_summary = generation.assistant_summary or f"{default_summary_prefix}：{title}"
         state.execution_manifest = self._build_execution_manifest(state, title)
         return state
 
@@ -79,8 +86,17 @@ class CodeGenerationService:
                     "If a real media asset is unavailable, render a styled poster, diagram, or descriptive card instead of telling the user it is a placeholder or would be implemented later. "
                     "Prefer plain CSS files for styling. Do not use Tailwind utility classes, @tailwind directives, or @apply unless you also add the complete Tailwind toolchain and config files. "
                     "Assume the automatic JSX runtime is enabled, so do not import React by default unless you need React namespace APIs such as React.useState. "
+                    "Avoid introducing unused imports, unused variables, unused functions, or unused useState setters. "
+                    "If only the state value is used, destructure useState as [value] instead of [value, setValue]. "
                     "Do not leave code comments that describe unfinished UI as placeholder or TODO. "
                     "At least one primary route must render a fully designed screen with real sections, realistic sample content, and clear visual styling that reflects the spec. "
+                    "Every local import you reference must either already exist in the selected workspace context or be created/updated in this same response. "
+                    "Do not import missing local components, pages, hooks, utils, or stylesheets. "
+                    "Do not return partial file fragments in content. "
+                    "If you use type=write for an existing file, content must contain the complete final file from its first line to its last line. "
+                    "If only part of an existing file changes, return patch hunks or before/after replacement data instead of a snippet. "
+                    "When generating a fresh app, prefer a self-contained implementation if that is the most reliable way to return a complete, runnable project. "
+                    f"{USER_FACING_LANGUAGE_RULE}"
                     "Return valid JSON only with keys assistantSummary and operations. "
                     "Each operation must contain type, path, summary, and either content or hunks when required. "
                     "Patch hunks must contain search, replace, and optional occurrence. "
@@ -105,16 +121,11 @@ class CodeGenerationService:
                 spec=dumps(spec.model_dump(mode="json", by_alias=True), ensure_ascii=False),
                 workspace=dumps([item.model_dump(mode="json", by_alias=True) for item in context_snapshot], ensure_ascii=False),
             )
-            try:
-                result = model.with_structured_output(StructuredGeneratedCodeOutput, method="json_mode").invoke(messages)
-            except Exception:
-                response = model.invoke(messages)
-                result = parse_json_response(response.content, StructuredGeneratedCodeOutput)
-            return self._normalize_generation_output(result, context_snapshot)
+            return self._invoke_and_normalize(model, messages, context_snapshot)
         except Exception as exc:
             if isinstance(exc, GenerationFailure):
                 raise
-            raise GenerationFailure(f"Coder model failed while generating code: {exc}") from exc
+            raise GenerationFailure(f"代码生成模型在生成代码时失败：{exc}") from exc
 
     def _invoke_repair(
         self,
@@ -134,6 +145,14 @@ class CodeGenerationService:
                     "Replace user-facing placeholder copy with finished UI, even if the content is backed by sample data. "
                     "If the project uses plain React + Vite, prefer normal CSS over Tailwind unless you also install and configure the full Tailwind toolchain. "
                     "Remove unused React imports when the automatic JSX runtime is active. "
+                    "Fix TypeScript noUnusedLocals and noUnusedParameters issues by removing or using unused imports, variables, and useState setters. "
+                    "If only the state value is used, destructure useState as [value] instead of [value, setValue]. "
+                    "Every local import you reference must already exist in the workspace snapshot or be created/updated in this same response. "
+                    "Do not leave the project in a state where source files import missing local modules. "
+                    "Do not return partial file fragments in content. "
+                    "If you use type=write for an existing file, content must contain the complete final file from its first line to its last line. "
+                    "If only part of an existing file changes, return patch hunks or before/after replacement data instead of a snippet. "
+                    f"{USER_FACING_LANGUAGE_RULE}"
                     "Return valid JSON only with keys assistantSummary and operations.",
                 ),
                 (
@@ -160,16 +179,38 @@ class CodeGenerationService:
                 failed_command=repair_context.failed_command,
                 build_error=repair_context.build_error,
             )
-            try:
-                result = model.with_structured_output(StructuredGeneratedCodeOutput, method="json_mode").invoke(messages)
-            except Exception:
-                response = model.invoke(messages)
-                result = parse_json_response(response.content, StructuredGeneratedCodeOutput)
-            return self._normalize_generation_output(result, context_snapshot)
+            return self._invoke_and_normalize(model, messages, context_snapshot)
         except Exception as exc:
             if isinstance(exc, GenerationFailure):
                 raise
-            raise GenerationFailure(f"Coder model failed while repairing the project: {exc}") from exc
+            raise GenerationFailure(f"代码生成模型在修复项目时失败：{exc}") from exc
+
+    def _invoke_and_normalize(
+        self,
+        model: object,
+        messages: object,
+        context_snapshot: List[WorkspaceFile],
+    ) -> GeneratedCodeOutput:
+        structured_error: Optional[Exception] = None
+
+        try:
+            structured_result = model.with_structured_output(StructuredGeneratedCodeOutput, method="json_mode").invoke(messages)
+            return self._normalize_generation_output(structured_result, context_snapshot)
+        except Exception as exc:
+            structured_error = exc
+
+        try:
+            response = model.invoke(messages)
+            parsed_result = parse_json_response(response.content, StructuredGeneratedCodeOutput)
+            return self._normalize_generation_output(parsed_result, context_snapshot)
+        except Exception as raw_exc:
+            if structured_error is not None:
+                raise GenerationFailure(
+                    f"结构化输出失败：{structured_error}；原始 JSON 回退也失败：{raw_exc}"
+                ) from raw_exc
+            if isinstance(raw_exc, GenerationFailure):
+                raise
+            raise GenerationFailure(f"原始 JSON 回退失败：{raw_exc}") from raw_exc
 
     def _normalize_generation_output(
         self,
@@ -185,7 +226,7 @@ class CodeGenerationService:
                 operations.append(normalized)
 
         if not operations:
-            raise GenerationFailure("Coder model returned no executable file operations after normalization.")
+            raise GenerationFailure("代码生成模型在规范化后没有返回可执行的文件操作。")
 
         return GeneratedCodeOutput(
             assistantSummary=(generation.assistant_summary or "").strip() or None,
@@ -200,7 +241,7 @@ class CodeGenerationService:
     ) -> Optional[FileOperation]:
         operation_type = self._infer_operation_type(item)
         path = (item.path or "").strip()
-        summary = (item.summary or "").strip() or f"Operation {index + 1}"
+        summary = (item.summary or "").strip() or f"操作 {index + 1}"
 
         if operation_type == "run":
             return self._normalize_run_operation(item, summary, workspace_lookup)
@@ -209,6 +250,15 @@ class CodeGenerationService:
             if not path:
                 return None
             content = item.content if item.content is not None else item.fallback_content
+            if path in workspace_lookup and content and self._looks_like_unified_diff(content):
+                parsed_hunks = self._parse_unified_diff_hunks(content)
+                if parsed_hunks:
+                    return FileOperation(
+                        type="patch",
+                        path=path,
+                        summary=summary,
+                        hunks=parsed_hunks,
+                    )
             return FileOperation(
                 type="write",
                 path=path,
@@ -229,6 +279,19 @@ class CodeGenerationService:
                 hunks.append(PatchHunk(search=item.search, replace=item.replace, occurrence=1))
 
             if hunks:
+                fallback_content = item.fallback_content
+                if (
+                    fallback_content is None
+                    and path in workspace_lookup
+                    and item.search
+                    and item.replace is not None
+                    and self._should_use_replace_as_patch_fallback(
+                        workspace_lookup[path],
+                        item.search,
+                        item.replace,
+                    )
+                ):
+                    fallback_content = item.replace
                 return FileOperation(
                     type="patch",
                     path=path,
@@ -241,11 +304,20 @@ class CodeGenerationService:
                         )
                         for hunk in hunks
                     ],
-                    fallbackContent=self._polish_generated_copy(item.fallback_content) if item.fallback_content is not None else None,
+                    fallbackContent=self._polish_generated_copy(fallback_content) if fallback_content is not None else None,
                 )
 
             replacement = item.content if item.content is not None else item.fallback_content
             if replacement is not None:
+                if path in workspace_lookup and self._looks_like_unified_diff(replacement):
+                    parsed_hunks = self._parse_unified_diff_hunks(replacement)
+                    if parsed_hunks:
+                        return FileOperation(
+                            type="patch",
+                            path=path,
+                            summary=summary,
+                            hunks=parsed_hunks,
+                        )
                 return FileOperation(
                     type="write",
                     path=path,
@@ -298,7 +370,7 @@ class CodeGenerationService:
         package_json_content, dependency_names = dependency_update
         dependency_summary = summary
         if not item.summary:
-            dependency_summary = f"Add dependency {', '.join(dependency_names)} to package.json."
+            dependency_summary = f"将依赖 {', '.join(dependency_names)} 加入 package.json。"
 
         return FileOperation(
             type="write",
@@ -341,32 +413,32 @@ class CodeGenerationService:
     def _build_execution_manifest(state: AgentSessionState, title: str) -> List[ExecutionStep]:
         preview_url = state.preview_url or "http://127.0.0.1:4173"
         return [
-            ExecutionStep(type="stop_preview", description="Stop any previous preview for this project."),
+            ExecutionStep(type="stop_preview", description="停止这个项目之前可能仍在运行的预览进程。"),
             ExecutionStep(
                 type="install_dependencies",
-                description="Install the app dependencies with npm.",
+                description="使用 npm 安装应用依赖。",
                 packageManager="npm",
             ),
             ExecutionStep(
                 type="build_web_app",
-                description="Run a production build as a verification step.",
+                description="执行生产构建作为验证步骤。",
                 packageManager="npm",
             ),
             ExecutionStep(
                 type="start_vite_preview",
-                description="Start the Vite development server for interactive preview.",
+                description="启动 Vite 开发服务器以便交互预览。",
                 packageManager="npm",
                 port=4173,
             ),
             ExecutionStep(
                 type="health_check",
-                description="Probe the preview root URL until it becomes healthy.",
+                description="轮询预览首页地址，直到服务可用。",
                 url=preview_url,
             ),
             ExecutionStep(
                 type="git_snapshot",
-                description="Commit the generated version into the project workspace repository.",
-                message=f"Generate version {state.version_number + 1}: {title}",
+                description="将本次生成结果提交到项目工作区仓库。",
+                message=f"生成第 {state.version_number + 1} 个版本：{title}",
             ),
         ]
 
@@ -374,9 +446,72 @@ class CodeGenerationService:
     def _polish_generated_copy(value: str) -> str:
         polished = re.sub(
             r"\[\s*video placeholder\s*:\s*([^\]]+)\]",
-            r"Video lesson focus: \1",
+            r"视频课程重点：\1",
             value,
             flags=re.IGNORECASE,
         )
-        polished = re.sub(r"\bvideo placeholder\b", "video lesson", polished, flags=re.IGNORECASE)
+        polished = re.sub(r"\bvideo placeholder\b", "视频课程", polished, flags=re.IGNORECASE)
         return polished
+
+    @staticmethod
+    def _looks_like_unified_diff(value: str) -> bool:
+        stripped = value.lstrip()
+        if not stripped.startswith("@@"):
+            return False
+        return any(line.startswith((" ", "+", "-")) for line in stripped.splitlines()[1:])
+
+    def _parse_unified_diff_hunks(self, value: str) -> List[PatchHunk]:
+        hunks: List[PatchHunk] = []
+        current_lines: List[str] = []
+        in_hunk = False
+
+        for line in value.splitlines(keepends=True):
+            if line.startswith("@@"):
+                if current_lines:
+                    hunk = self._build_patch_hunk_from_diff_lines(current_lines)
+                    if hunk is not None:
+                        hunks.append(hunk)
+                    current_lines = []
+                in_hunk = True
+                continue
+
+            if not in_hunk:
+                continue
+
+            if line.startswith("\\ No newline at end of file"):
+                continue
+
+            if line.startswith((" ", "+", "-")):
+                current_lines.append(line)
+
+        if current_lines:
+            hunk = self._build_patch_hunk_from_diff_lines(current_lines)
+            if hunk is not None:
+                hunks.append(hunk)
+
+        return hunks
+
+    def _build_patch_hunk_from_diff_lines(self, lines: List[str]) -> Optional[PatchHunk]:
+        search_parts: List[str] = []
+        replace_parts: List[str] = []
+
+        for line in lines:
+            prefix = line[:1]
+            text = line[1:]
+            if prefix in {" ", "-"}:
+                search_parts.append(text)
+            if prefix in {" ", "+"}:
+                replace_parts.append(text)
+
+        search = "".join(search_parts)
+        replace = self._polish_generated_copy("".join(replace_parts))
+        if not search and not replace:
+            return None
+        return PatchHunk(search=search, replace=replace, occurrence=1)
+
+    @staticmethod
+    def _should_use_replace_as_patch_fallback(existing: str, search: str, replace: str) -> bool:
+        if not existing or not search or not replace:
+            return False
+        threshold = max(120, int(len(existing) * 0.6))
+        return len(search) >= threshold and len(replace) >= threshold

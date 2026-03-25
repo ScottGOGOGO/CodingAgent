@@ -20,9 +20,9 @@ def test_runtime_returns_error_when_qwen_is_not_configured(monkeypatch) -> None:
 
     assert state.status == ProjectStatus.ERROR
     assert state.error is not None
-    assert "Qwen API key is not configured" in state.error
+    assert "未配置 Qwen API Key" in state.error
     assert state.assistant_summary is not None
-    assert state.assistant_summary.startswith("Generation failed:")
+    assert state.assistant_summary.startswith("生成失败：")
 
 
 def test_runtime_repair_returns_error_when_qwen_is_not_configured(monkeypatch) -> None:
@@ -86,4 +86,4 @@ def test_runtime_repair_returns_error_when_qwen_is_not_configured(monkeypatch) -
 
     assert state.status == ProjectStatus.ERROR
     assert state.error is not None
-    assert "Qwen API key is not configured" in state.error
+    assert "未配置 Qwen API Key" in state.error

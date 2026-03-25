@@ -79,5 +79,5 @@ def test_clarifier_normalizes_nonstandard_action_and_missing_summary() -> None:
 
     assert action == "ask"
     assert "budget" in summary
-    assert questions[0].question.startswith("Could you share a bit more detail")
+    assert questions[0].question.startswith("你可以再补充一些关于")
     assert clarity_score == 0.45

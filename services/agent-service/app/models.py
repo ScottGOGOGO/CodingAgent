@@ -148,6 +148,43 @@ def _stringify_named_mapping(value: Dict[str, Any]) -> str:
     return ""
 
 
+def _coerce_operation_content(value: object) -> object:
+    if value is None or isinstance(value, str):
+        return value
+
+    if isinstance(value, dict):
+        for key in (
+            "after",
+            "content",
+            "newContent",
+            "new",
+            "updated",
+            "replacement",
+            "replace",
+            "value",
+            "code",
+            "text",
+            "fullContent",
+            "body",
+            "before",
+        ):
+            candidate = value.get(key)
+            if candidate is None:
+                continue
+            if isinstance(candidate, str):
+                return candidate
+            nested = _coerce_operation_content(candidate)
+            if isinstance(nested, str):
+                return nested
+
+    if isinstance(value, list):
+        parts = [part for part in (_coerce_operation_content(item) for item in value) if isinstance(part, str) and part]
+        if parts:
+            return "\n".join(parts)
+
+    return value
+
+
 class DataModelNeed(AppBaseModel):
     entity: str = Field(default="", validation_alias=AliasChoices("entity", "name", "title"))
     fields: List[str] = Field(default_factory=list)
@@ -431,7 +468,32 @@ class StructuredSpecOutput(AppBaseModel):
 
 class StructuredPlanOutput(AppBaseModel):
     steps: List[str]
-    summary: str
+    summary: str = ""
+
+    @field_validator("steps", mode="before")
+    @classmethod
+    def _coerce_steps(cls, value: object) -> List[str]:
+        if value is None:
+            return []
+
+        items = value if isinstance(value, list) else [value]
+        normalized: List[str] = []
+
+        for item in items:
+            if isinstance(item, dict):
+                title = _stringify_model_value(item.get("title") or item.get("name") or item.get("step"))
+                detail = _stringify_model_value(item.get("description") or item.get("detail") or item.get("summary"))
+                if title and detail:
+                    text = f"{title}: {detail}"
+                else:
+                    text = title or detail or _stringify_model_value(item)
+            else:
+                text = _stringify_model_value(item)
+
+            if text:
+                normalized.append(text)
+
+        return normalized
 
 
 class StructuredCriticOutput(AppBaseModel):
@@ -442,8 +504,8 @@ class StructuredCriticOutput(AppBaseModel):
 
 
 class StructuredPatchHunkOutput(AppBaseModel):
-    search: Optional[str] = Field(default=None, validation_alias=AliasChoices("search", "find", "old"))
-    replace: Optional[str] = Field(default=None, validation_alias=AliasChoices("replace", "replacement", "new"))
+    search: Optional[str] = Field(default=None, validation_alias=AliasChoices("search", "find", "old", "before"))
+    replace: Optional[str] = Field(default=None, validation_alias=AliasChoices("replace", "replacement", "new", "after"))
     occurrence: Optional[int] = Field(default=1, validation_alias=AliasChoices("occurrence", "index"))
 
 
@@ -451,7 +513,10 @@ class StructuredFileOperationOutput(AppBaseModel):
     type: Optional[str] = Field(default=None, validation_alias=AliasChoices("type", "op", "action", "operation"))
     path: Optional[str] = Field(default=None, validation_alias=AliasChoices("path", "file", "filePath", "filename", "target"))
     summary: Optional[str] = Field(default=None, validation_alias=AliasChoices("summary", "description", "reason", "title"))
-    content: Optional[str] = Field(default=None, validation_alias=AliasChoices("content", "code", "newContent", "text"))
+    content: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("content", "code", "newContent", "text", "value"),
+    )
     hunks: List[StructuredPatchHunkOutput] = Field(default_factory=list)
     fallback_content: Optional[str] = Field(
         default=None,
@@ -459,8 +524,38 @@ class StructuredFileOperationOutput(AppBaseModel):
         validation_alias=AliasChoices("fallbackContent", "fallback_content", "fullContent"),
     )
     command: Optional[str] = Field(default=None, validation_alias=AliasChoices("command", "run", "script"))
-    search: Optional[str] = Field(default=None, validation_alias=AliasChoices("search", "find", "old"))
-    replace: Optional[str] = Field(default=None, validation_alias=AliasChoices("replace", "replacement", "new"))
+    search: Optional[str] = Field(default=None, validation_alias=AliasChoices("search", "find", "old", "before"))
+    replace: Optional[str] = Field(default=None, validation_alias=AliasChoices("replace", "replacement", "new", "after"))
+
+    @model_validator(mode="before")
+    @classmethod
+    def _expand_before_after_content(cls, value: object) -> object:
+        if not isinstance(value, dict):
+            return value
+
+        raw_content = value.get("content")
+        if not isinstance(raw_content, dict):
+            return value
+
+        before = _coerce_operation_content(raw_content.get("before"))
+        after = _coerce_operation_content(raw_content.get("after"))
+        has_explicit_patch = any(
+            value.get(key) is not None
+            for key in ("hunks", "search", "find", "old", "replace", "replacement", "new")
+        )
+        if not isinstance(before, str) or not isinstance(after, str) or has_explicit_patch:
+            return value
+
+        normalized = dict(value)
+        normalized["type"] = "patch"
+        normalized.setdefault("search", before)
+        normalized.setdefault("replace", after)
+        return normalized
+
+    @field_validator("content", "fallback_content", mode="before")
+    @classmethod
+    def _coerce_content_fields(cls, value: object) -> object:
+        return _coerce_operation_content(value)
 
 
 class GeneratedCodeOutput(AppBaseModel):

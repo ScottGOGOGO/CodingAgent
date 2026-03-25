@@ -23,6 +23,12 @@ from app.services.json_parser import parse_json_response
 from app.services.model_provider import ModelProvider
 
 
+USER_FACING_LANGUAGE_RULE = (
+    "除非用户明确要求其他语言，所有面向用户的自然语言内容都必须使用简体中文。"
+    "保留 JSON key 和 action 枚举值原样返回。"
+)
+
+
 def _message(role: ChatRole, content: str) -> ChatMessage:
     return ChatMessage(id=str(uuid4()), role=role, content=content, createdAt=datetime.utcnow().isoformat())
 
@@ -51,14 +57,14 @@ def apply_clarification_answers(
     if state.clarification_decision:
         question_lookup = {item.id: item.question for item in state.clarification_decision.questions}
 
-    lines = ["Additional clarification from the user:"]
+    lines = ["用户补充说明："]
     for answer in answers:
         normalized = answer.answer.strip()
         if not normalized:
             continue
-        question = question_lookup.get(answer.question_id, f"Clarification {answer.question_id}")
-        lines.append(f"Question: {question}")
-        lines.append(f"Answer: {normalized}")
+        question = question_lookup.get(answer.question_id, f"澄清问题 {answer.question_id}")
+        lines.append(f"问题：{question}")
+        lines.append(f"回答：{normalized}")
 
     if len(lines) > 1:
         state.messages.append(_message(ChatRole.USER, "\n".join(lines)))
@@ -134,6 +140,7 @@ class DynamicClarifier:
                     "Do not use fixed slots or forms. Ask at most 3 high-leverage open-ended questions. "
                     "If the spec is good enough to plan, return action=ready. "
                     "If a few assumptions are acceptable, return action=assume_ready and list them. "
+                    f"{USER_FACING_LANGUAGE_RULE}"
                     "Return valid JSON only.",
                 ),
                 (
@@ -142,6 +149,7 @@ class DynamicClarifier:
                     "Current working spec:\n{working_spec}\n\n"
                     "Existing assumptions:\n{assumptions}\n\n"
                     "Return a JSON object with keys: action, summary, clarityScore, missingInformation, questions, assumptions, workingSpec.\n"
+                    "The values for summary, missingInformation, assumptions, questions, placeholders, rationales, and all natural-language fields in workingSpec must be in Simplified Chinese.\n"
                     "workingSpec must include these fields:\n"
                     "- title: string or null\n"
                     "- summary: string or null\n"
@@ -166,7 +174,7 @@ class DynamicClarifier:
             messages = prompt.format_messages(
                 messages=dumps([message.model_dump(mode="json", by_alias=True) for message in state.messages], ensure_ascii=False),
                 working_spec=dumps(state.working_spec.model_dump(mode="json", by_alias=True), ensure_ascii=False),
-                assumptions="\n".join(state.assumptions) or "None",
+                assumptions="\n".join(state.assumptions) or "无",
             )
             try:
                 result = model.with_structured_output(
@@ -179,7 +187,7 @@ class DynamicClarifier:
         except Exception as exc:
             if isinstance(exc, GenerationFailure):
                 raise
-            raise GenerationFailure(f"Clarifier model failed while refining the request: {exc}") from exc
+            raise GenerationFailure(f"澄清模型在完善需求时失败：{exc}") from exc
 
         action = self._normalize_action(result.action, result.questions, result.missing_information)
         summary = self._normalize_summary(state, result.summary, action, result.questions, result.missing_information)
@@ -239,16 +247,16 @@ class DynamicClarifier:
 
         if action == "ask":
             if missing_information:
-                return f"I need a little more detail before planning, especially around {', '.join(_normalize_string_list(missing_information)[:2])}."
+                return f"开始规划前我还需要补充一些信息，尤其是 {', '.join(_normalize_string_list(missing_information)[:2])} 这部分。"
             if questions:
-                return "I need a bit more detail before I can plan the app well."
-            return "I need a bit more detail before I can plan the app well."
+                return "为了更准确地规划应用，我还需要你补充一点信息。"
+            return "为了更准确地规划应用，我还需要你补充一点信息。"
 
         if action == "assume_ready":
-            return "I have enough to proceed with a few explicit assumptions."
+            return "现有信息已经足够，我会基于少量明确假设继续推进。"
 
-        latest_request = state.messages[-1].content if state.messages else "the request"
-        return f"I have enough detail to start planning around {latest_request}."
+        latest_request = state.messages[-1].content if state.messages else "当前需求"
+        return f"我已经掌握足够信息，可以开始围绕“{latest_request}”进入规划。"
 
     @staticmethod
     def _normalize_clarity_score(score: Optional[float], action: str, questions: List[object]) -> float:
@@ -271,7 +279,7 @@ class DynamicClarifier:
                 ClarificationQuestion(
                     id=item.id.strip() or f"q-{index + 1}",
                     question=question,
-                    placeholder=item.placeholder.strip() or "Share any detail that would help shape the result",
+                    placeholder=item.placeholder.strip() or "补充任何有助于我完善结果的细节",
                     rationale=item.rationale,
                     required=item.required,
                 )
@@ -287,8 +295,8 @@ class DynamicClarifier:
             normalized.append(
                 ClarificationQuestion(
                     id=f"q-{index + 1}",
-                    question=f"Could you share a bit more detail about {topic}?",
-                    placeholder=f"Add any preferences or constraints for {topic}",
+                    question=f"你可以再补充一些关于“{topic}”的细节吗？",
+                    placeholder=f"请写下你对“{topic}”的偏好、限制或特殊要求",
                 )
             )
 
@@ -298,7 +306,7 @@ class DynamicClarifier:
         return [
             ClarificationQuestion(
                 id="q-1",
-                question="What matters most in the result you want me to generate?",
-                placeholder="Share the outcome, priorities, or constraints that matter most",
+                question="你最希望我生成结果时优先满足什么？",
+                placeholder="请告诉我最重要的目标、优先级或限制条件",
             )
         ]

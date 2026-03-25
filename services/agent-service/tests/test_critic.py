@@ -59,7 +59,7 @@ def test_critic_normalizes_object_issues_and_missing_summary(monkeypatch) -> Non
 
     result = critic.evaluate(state)
 
-    assert result.summary == "Critic found 2 issue(s) to review before execution."
+    assert result.summary == "评审发现 2 个问题，执行前需要先处理。"
     assert result.issues == [
         "[critical] 缺少核心页面",
         "[high] 未集成地图服务: Need route support",

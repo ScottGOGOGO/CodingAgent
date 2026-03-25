@@ -1,4 +1,4 @@
-from app.models import AgentSessionState, ReasoningMode, StructuredSpecOutput
+from app.models import AgentSessionState, ReasoningMode, StructuredPlanOutput, StructuredSpecOutput
 from app.services.spec_builder import SpecBuilder
 
 
@@ -62,9 +62,9 @@ def test_build_spec_backfills_missing_screen_purpose_flow_success_and_ids(monkey
     assert spec.goal == "Help travelers plan a full day in Shanghai."
     assert spec.brand_and_visual_direction == "tone: Warm; layout: Card-based"
     assert spec.screens[0].id == "itinerary-overview"
-    assert spec.screens[0].purpose == "Support the itinerary overview experience."
+    assert spec.screens[0].purpose == "用于支撑Itinerary Overview的核心使用体验。"
     assert spec.core_flows[0].id == "create-itinerary"
-    assert spec.core_flows[0].success == "Users can successfully complete create itinerary."
+    assert spec.core_flows[0].success == "用户可以顺利完成Create itinerary。"
     assert spec.data_model_needs[0].entity == "Location"
     assert spec.data_model_needs[0].fields == ["name", "district"]
     assert spec.data_model_needs[0].notes == "Top places in Shanghai"
@@ -136,3 +136,61 @@ def test_build_spec_accepts_string_shaped_data_model_needs(monkeypatch) -> None:
     assert spec.data_model_needs[0].entity == "Drill"
     assert spec.data_model_needs[0].fields == ["title (string)", "difficulty (enum)"]
     assert spec.data_model_needs[1].entity == "PracticeNote"
+
+
+def test_build_spec_uses_stable_fallback_ids_for_chinese_names(monkeypatch) -> None:
+    builder = SpecBuilder()
+    state = make_state()
+
+    def fake_invoke_structured(**kwargs):
+        return StructuredSpecOutput(
+            title="上海一日游助手",
+            summary="帮助用户安排行程。",
+            goal="帮助游客完成上海一日游规划。",
+            targetUsers=["游客"],
+            screens=[
+                {
+                    "name": "行程总览",
+                    "elements": ["时间线", "预算卡片"],
+                }
+            ],
+            coreFlows=[
+                {
+                    "title": "生成路线",
+                    "steps": ["选择兴趣", "确认停靠点"],
+                }
+            ],
+            dataModelNeeds=[],
+            integrations=[],
+            brandAndVisualDirection="轻松旅行杂志风",
+            constraints=[],
+            successCriteria=[],
+            assumptions=[],
+        )
+
+    monkeypatch.setattr(builder, "_invoke_structured", fake_invoke_structured)
+
+    spec = builder.build_spec(state)
+
+    assert spec.app_name == "generated-app"
+    assert spec.screens[0].id == "screen-1"
+    assert spec.core_flows[0].id == "flow-1"
+
+
+def test_structured_plan_output_accepts_object_shaped_steps() -> None:
+    result = StructuredPlanOutput.model_validate(
+        {
+            "steps": [
+                {"id": 1, "description": "先完成首页与导航结构"},
+                {"title": "补齐训练计划模块", "detail": "支持创建与编辑训练计划"},
+                "增加进度跟踪页面",
+            ],
+            "summary": "实现计划",
+        }
+    )
+
+    assert result.steps == [
+        "先完成首页与导航结构",
+        "补齐训练计划模块: 支持创建与编辑训练计划",
+        "增加进度跟踪页面",
+    ]

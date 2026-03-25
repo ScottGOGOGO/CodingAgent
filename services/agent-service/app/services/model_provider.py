@@ -27,7 +27,7 @@ class ModelProvider:
     def get_chat_model(self, role: ModelRole) -> Optional[BaseChatModel]:
         settings = get_settings()
         if settings.model_provider != "qwen":
-            raise ModelProviderError(f"Unsupported model provider: {settings.model_provider}")
+            raise ModelProviderError(f"暂不支持的模型提供方：{settings.model_provider}")
 
         if not settings.qwen_api_key:
             return None
@@ -50,6 +50,6 @@ class ModelProvider:
         model = self.get_chat_model(role)
         if model is None:
             raise ModelProviderError(
-                "Qwen API key is not configured. Set QWEN_API_KEY or DASHSCOPE_API_KEY before running the agent."
+                "未配置 Qwen API Key。请在启动 agent 前设置 QWEN_API_KEY 或 DASHSCOPE_API_KEY。"
             )
         return model

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+import posixpath
 import re
 from typing import Any, Dict, List, Optional
 
@@ -26,10 +27,18 @@ from app.services.provider_router import ProviderRouter
 
 
 class StrategyAdapter(ABC):
+    LOCAL_IMPORT_FROM_RE = re.compile(r"""from\s+["'](\.{1,2}/[^"']+)["']""")
+    LOCAL_IMPORT_SIDE_EFFECT_RE = re.compile(r"""import\s+["'](\.{1,2}/[^"']+)["']""")
+    LOCAL_REQUIRE_RE = re.compile(r"""require\(\s*["'](\.{1,2}/[^"']+)["']\s*\)""")
     PLACEHOLDER_MARKERS = (
         "待实现",
+        "未实现",
+        "占位",
+        "占位符",
         "todo",
         "coming soon",
+        "敬请期待",
+        "稍后上线",
         "lorem ipsum",
         "tbd",
         "video placeholder",
@@ -41,6 +50,12 @@ class StrategyAdapter(ABC):
     )
     BLOCKING_SUMMARY_MARKERS = (
         "待实现",
+        "未实现界面",
+        "占位界面",
+        "占位符界面",
+        "空白脚手架",
+        "页面骨架",
+        "路由骨架",
         "route-only skeleton",
         "routing stubs",
         "screen shells",
@@ -52,6 +67,14 @@ class StrategyAdapter(ABC):
     )
     BLOCKING_CRITIC_ISSUE_MARKERS = (
         "待实现",
+        "未实现界面",
+        "占位界面",
+        "占位符界面",
+        "空白脚手架",
+        "页面骨架",
+        "路由骨架",
+        "占位路由",
+        "空页面",
         "route-only skeleton",
         "routing stubs",
         "screen shells",
@@ -110,7 +133,7 @@ class StrategyAdapter(ABC):
         except Exception as exc:
             state.status = ProjectStatus.ERROR
             state.error = str(exc)
-            state.assistant_summary = f"Generation failed: {state.error}"
+            state.assistant_summary = f"生成失败：{state.error}"
             state.run_phase = RunPhase.REPORT
             state.run = RunSnapshot(
                 status=RunStatus.FAILED,
@@ -129,7 +152,7 @@ class StrategyAdapter(ABC):
     ) -> AgentSessionState:
         try:
             if state.app_spec is None:
-                raise RuntimeError("Cannot repair a project before an app spec has been generated.")
+                raise RuntimeError("必须先生成应用规格，才能开始修复项目。")
 
             state.status = ProjectStatus.REPAIRING
             state.run_phase = RunPhase.IMPLEMENT_LOOP
@@ -143,12 +166,12 @@ class StrategyAdapter(ABC):
                 evaluation=state.evaluation,
             )
             state.error = None
-            append_assistant_message(state, state.assistant_summary or "Prepared a repair patch.")
+            append_assistant_message(state, state.assistant_summary or "已准备好修复补丁。")
             return state
         except Exception as exc:
             state.status = ProjectStatus.ERROR
             state.error = str(exc)
-            state.assistant_summary = f"Repair failed: {state.error}"
+            state.assistant_summary = f"修复失败：{state.error}"
             state.run = RunSnapshot(
                 status=RunStatus.FAILED,
                 phase=RunPhase.REPORT,
@@ -182,7 +205,7 @@ class StrategyAdapter(ABC):
         state = AgentSessionState.model_validate(payload["state"])
         self._set_run(state, RunPhase.PLANNING, RunStatus.IN_PROGRESS)
         state.plan_steps = self.spec_builder.build_plan(state.app_spec)
-        state.assistant_summary = f"Prepared the implementation plan for {state.app_spec.title}."
+        state.assistant_summary = f"已为 {state.app_spec.title} 准备好实现计划。"
         return {"state": state.as_contract(), "workspace_snapshot": payload.get("workspace_snapshot", []), "approved": payload.get("approved", False)}
 
     def context_build(self, payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -216,7 +239,7 @@ class StrategyAdapter(ABC):
 
         if not state.file_operations:
             state.status = ProjectStatus.ERROR
-            state.error = "The coder returned no file operations."
+            state.error = "代码生成器没有返回任何文件操作。"
         else:
             existing_paths = {item.path for item in workspace_snapshot}
             final_paths = set(existing_paths)
@@ -229,15 +252,23 @@ class StrategyAdapter(ABC):
             required_paths = {"package.json", "index.html", "src/main.tsx", "src/App.tsx"}
             if not required_paths.issubset(final_paths):
                 state.status = ProjectStatus.ERROR
-                state.error = "The generated operations do not produce a runnable React + Vite app."
+                state.error = "当前生成的文件操作还不能产出可运行的 React + Vite 应用。"
             else:
                 placeholder_paths = self._find_placeholder_paths(state.file_operations)
                 if placeholder_paths:
                     state.status = ProjectStatus.ERROR
                     state.error = (
-                        "The generated operations still contain placeholder or TODO UI content in "
-                        f"{', '.join(placeholder_paths)}. Generate real user-facing screens before approval."
+                        "生成的文件操作中仍包含占位或 TODO 界面内容，涉及 "
+                        f"{', '.join(placeholder_paths)}。请先生成真实可用的用户页面，再进入审批。"
                     )
+                else:
+                    missing_imports = self._find_missing_local_imports(state.file_operations, final_paths)
+                    if missing_imports:
+                        state.status = ProjectStatus.ERROR
+                        state.error = (
+                            "生成的文件操作中引用了尚未生成的本地文件："
+                            f"{', '.join(missing_imports)}。请补齐所有被引用的本地模块后再进入审批。"
+                        )
 
         if state.error:
             state.run = RunSnapshot(
@@ -252,8 +283,8 @@ class StrategyAdapter(ABC):
         if self._critic_found_blocking_stub_feedback(state.evaluation.summary, state.evaluation.issues):
             state.status = ProjectStatus.ERROR
             state.error = (
-                "The critic detected placeholder or unimplemented UI in the proposed app. "
-                "Generate substantive screens before approval."
+                "评审检测到当前方案里仍有占位或未实现界面。"
+                "请先生成完整且真实可用的页面，再进入审批。"
             )
             state.run = RunSnapshot(
                 status=RunStatus.FAILED,
@@ -293,8 +324,8 @@ class StrategyAdapter(ABC):
 
         state.status = ProjectStatus.AWAITING_APPROVAL
         state.assistant_summary = (
-            f"{state.app_spec.title} is ready for approval. "
-            "Confirm to apply the proposed file operations, run verification, and launch the preview."
+            f"{state.app_spec.title} 已准备好进入审批。"
+            "确认后将应用提议的文件改动、执行验证，并启动预览。"
         )
         append_assistant_message(state, state.assistant_summary)
         return {"state": state.as_contract(), "approved": approved}
@@ -303,7 +334,7 @@ class StrategyAdapter(ABC):
         state = AgentSessionState.model_validate(payload["state"])
         self._set_run(state, RunPhase.EXECUTE_DISPATCH, RunStatus.RUNNING)
         state.status = ProjectStatus.RUNNING
-        state.assistant_summary = "Execution has been dispatched to the worker."
+        state.assistant_summary = "执行任务已分发给工作进程。"
         return {"state": state.as_contract()}
 
     def report(self, payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -380,6 +411,64 @@ class StrategyAdapter(ABC):
                 if isinstance(value, str) and value.strip():
                     texts.append(StrategyAdapter._sanitize_operation_text(value))
         return texts
+
+    @classmethod
+    def _find_missing_local_imports(cls, operations: List[Any], final_paths: set[str]) -> List[str]:
+        missing: List[str] = []
+        seen = set()
+
+        for operation in operations:
+            path = getattr(operation, "path", "")
+            if not path.endswith((".tsx", ".jsx", ".ts", ".js")):
+                continue
+
+            text_fragments = []
+            for value in (
+                getattr(operation, "content", None),
+                getattr(operation, "fallback_content", None),
+                getattr(operation, "fallbackContent", None),
+                getattr(operation, "replace", None),
+            ):
+                if isinstance(value, str) and value.strip():
+                    text_fragments.append(value)
+
+            for hunk in getattr(operation, "hunks", []) or []:
+                replace = getattr(hunk, "replace", None)
+                if isinstance(replace, str) and replace.strip():
+                    text_fragments.append(replace)
+
+            for text in text_fragments:
+                for import_path in cls._extract_local_imports(text):
+                    if cls._has_matching_local_import_target(path, import_path, final_paths):
+                        continue
+                    key = f"{path} -> {import_path}"
+                    if key not in seen:
+                        seen.add(key)
+                        missing.append(key)
+
+        return missing
+
+    @classmethod
+    def _extract_local_imports(cls, text: str) -> List[str]:
+        matches = []
+        for pattern in (cls.LOCAL_IMPORT_FROM_RE, cls.LOCAL_IMPORT_SIDE_EFFECT_RE, cls.LOCAL_REQUIRE_RE):
+            matches.extend(pattern.findall(text))
+        return matches
+
+    @staticmethod
+    def _has_matching_local_import_target(source_path: str, import_path: str, final_paths: set[str]) -> bool:
+        source_dir = posixpath.dirname(source_path)
+        base_path = posixpath.normpath(posixpath.join(source_dir, import_path))
+        candidates = [base_path]
+
+        known_extensions = (".ts", ".tsx", ".js", ".jsx", ".css", ".scss", ".sass", ".less", ".json")
+        if not base_path.endswith(known_extensions):
+            for extension in known_extensions:
+                candidates.append(f"{base_path}{extension}")
+            for extension in (".ts", ".tsx", ".js", ".jsx"):
+                candidates.append(posixpath.join(base_path, f"index{extension}"))
+
+        return any(candidate in final_paths for candidate in candidates)
 
     @classmethod
     def _critic_found_blocking_stub_feedback(cls, summary: str, issues: List[str]) -> bool:
