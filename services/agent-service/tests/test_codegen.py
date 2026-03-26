@@ -221,6 +221,58 @@ def test_codegen_accepts_object_shaped_content_payloads() -> None:
     assert normalized.operations[0].hunks[0].replace == "export default function Home() { return <div>New</div>; }\n"
 
 
+def test_codegen_accepts_list_shaped_before_after_patch_hunks() -> None:
+    service = CodeGenerationService()
+    context_snapshot = [
+        WorkspaceFile(
+            path="src/pages/Home.tsx",
+            content=(
+                "export default function Home() {\n"
+                "  return <div>Old</div>;\n"
+                "}\n"
+            ),
+        ),
+    ]
+
+    generation = StructuredGeneratedCodeOutput.model_validate(
+        {
+            "operations": [
+                {
+                    "op": "patch",
+                    "path": "src/pages/Home.tsx",
+                    "hunks": {
+                        "before": [
+                            "export default function Home() {",
+                            "  return <div>Old</div>;",
+                            "}",
+                        ],
+                        "after": [
+                            "export default function Home() {",
+                            "  return <div>New</div>;",
+                            "}",
+                        ],
+                    },
+                }
+            ],
+        }
+    )
+
+    normalized = service._normalize_generation_output(generation, context_snapshot)
+
+    assert normalized.operations[0].type == "patch"
+    assert normalized.operations[0].path == "src/pages/Home.tsx"
+    assert normalized.operations[0].hunks[0].search == (
+        "export default function Home() {\n"
+        "  return <div>Old</div>;\n"
+        "}"
+    )
+    assert normalized.operations[0].hunks[0].replace == (
+        "export default function Home() {\n"
+        "  return <div>New</div>;\n"
+        "}"
+    )
+
+
 def test_codegen_falls_back_to_raw_json_when_structured_output_normalizes_to_noop() -> None:
     service = CodeGenerationService()
     context_snapshot = [

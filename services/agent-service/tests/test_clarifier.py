@@ -1,4 +1,12 @@
-from app.models import AgentSessionState, ClarificationAnswer, ClarificationDecision, ClarificationQuestion, ReasoningMode
+from app.models import (
+    AgentSessionState,
+    ClarificationAnswer,
+    ClarificationDecision,
+    ClarificationQuestion,
+    ReasoningMode,
+    StructuredClarifierOutput,
+    WorkingSpec,
+)
 from app.services.clarifier import DynamicClarifier, append_user_message, apply_clarification_answers
 from langchain_core.prompts import ChatPromptTemplate
 
@@ -81,3 +89,50 @@ def test_clarifier_normalizes_nonstandard_action_and_missing_summary() -> None:
     assert "budget" in summary
     assert questions[0].question.startswith("你可以再补充一些关于")
     assert clarity_score == 0.45
+
+
+def test_structured_clarifier_output_accepts_string_questions_and_scores() -> None:
+    result = StructuredClarifierOutput.model_validate(
+        {
+            "action": {"label": "ready"},
+            "summary": {"text": "信息足够，进入规划"},
+            "clarityScore": "85%",
+            "missingInformation": "预算范围",
+            "questions": "你希望优先支持哪些功能？",
+            "assumptions": {"label": "默认移动端优先"},
+            "workingSpec": "一个帮助用户规划训练的应用",
+        }
+    )
+
+    assert result.action == "ready"
+    assert result.summary == "text: 信息足够，进入规划"
+    assert result.clarity_score == 0.85
+    assert result.missing_information == ["预算范围"]
+    assert result.questions[0].question == "你希望优先支持哪些功能？"
+    assert result.assumptions == [{"label": "默认移动端优先"}]
+    assert result.working_spec.summary == "一个帮助用户规划训练的应用"
+
+
+def test_clarifier_prefers_assume_ready_for_rich_prompt_with_non_blocking_gaps() -> None:
+    clarifier = DynamicClarifier()
+    state = append_user_message(
+        make_state(),
+        "帮我生成一个针对零基础初学者的网球自学计划应用，面向18岁零基础用户，需要视频教学、练习计划制定、进度跟踪、动作纠正和社区交流功能。",
+    )
+
+    should_assume_ready = clarifier._should_assume_ready(
+        state=state,
+        working_spec=WorkingSpec(
+            title="网球自学计划应用",
+            summary="帮助零基础用户系统化学习网球。",
+            targetUsers=["18岁零基础用户"],
+            screens=["首页", "课程页"],
+        ),
+        questions=[
+            ClarificationQuestion(question="您希望这个应用采用什么品牌调性和视觉风格？"),
+            ClarificationQuestion(question="您对应用的成功标准有什么具体期望？"),
+        ],
+        missing_information=["品牌风格偏好", "成功标准指标"],
+    )
+
+    assert should_assume_ready

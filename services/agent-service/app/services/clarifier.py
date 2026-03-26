@@ -19,8 +19,8 @@ from app.models import (
     WorkingSpec,
 )
 from app.services.errors import GenerationFailure
-from app.services.json_parser import parse_json_response
 from app.services.model_provider import ModelProvider
+from app.services.structured_output import invoke_structured_json
 
 
 USER_FACING_LANGUAGE_RULE = (
@@ -126,6 +126,32 @@ def _normalize_string_list(items: List[object]) -> List[str]:
 
 
 class DynamicClarifier:
+    NON_BLOCKING_GAP_MARKERS = (
+        "品牌",
+        "视觉",
+        "风格",
+        "调性",
+        "预算",
+        "成功标准",
+        "指标",
+        "优先级",
+        "技术实现",
+        "实现方式",
+    )
+    CORE_GAP_MARKERS = (
+        "目标用户",
+        "用户是谁",
+        "什么类型的产品",
+        "产品类型",
+        "基本用途",
+        "主要目标",
+        "核心功能",
+        "关键任务",
+        "页面",
+        "流程",
+        "数据模型",
+    )
+
     def __init__(self) -> None:
         self.provider = ModelProvider()
 
@@ -176,14 +202,12 @@ class DynamicClarifier:
                 working_spec=dumps(state.working_spec.model_dump(mode="json", by_alias=True), ensure_ascii=False),
                 assumptions="\n".join(state.assumptions) or "无",
             )
-            try:
-                result = model.with_structured_output(
-                    StructuredClarifierOutput,
-                    method="json_mode",
-                ).invoke(messages)
-            except Exception:
-                response = model.invoke(messages)
-                result = parse_json_response(response.content, StructuredClarifierOutput)
+            result = invoke_structured_json(
+                model=model,
+                messages=messages,
+                output_schema=StructuredClarifierOutput,
+                repair_focus="重点修正 action、questions、missingInformation、assumptions 和 workingSpec 的 JSON 结构。",
+            )
         except Exception as exc:
             if isinstance(exc, GenerationFailure):
                 raise
@@ -194,6 +218,10 @@ class DynamicClarifier:
         missing_information = _normalize_string_list(result.missing_information)
         assumptions = _normalize_string_list(result.assumptions)
         questions = self._normalize_questions(result.questions, missing_information)
+        if action == "ask" and self._should_assume_ready(state, result.working_spec, questions, missing_information):
+            action = "assume_ready"
+            questions = []
+            missing_information = []
         clarity_score = self._normalize_clarity_score(result.clarity_score, action, questions)
 
         state.working_spec = _merge_working_spec(state.working_spec, result.working_spec)
@@ -310,3 +338,52 @@ class DynamicClarifier:
                 placeholder="请告诉我最重要的目标、优先级或限制条件",
             )
         ]
+
+    def _should_assume_ready(
+        self,
+        state: AgentSessionState,
+        working_spec: WorkingSpec,
+        questions: List[ClarificationQuestion],
+        missing_information: List[str],
+    ) -> bool:
+        if not questions and not missing_information:
+            return False
+
+        all_topics = [item.question for item in questions] + list(missing_information)
+        if not all(self._looks_non_blocking_gap(topic) for topic in all_topics):
+            return False
+
+        latest_user = self._latest_user_message(state)
+        if not latest_user:
+            return False
+
+        richness_score = 0
+        if len(latest_user) >= 40:
+            richness_score += 1
+        if any(token in latest_user for token in ("需要", "包含", "支持", "功能", "面向", "用户", "应用")):
+            richness_score += 1
+        if any(token in latest_user for token in ("、", "，", ",", "\n")):
+            richness_score += 1
+        if working_spec.summary or working_spec.goal or working_spec.title:
+            richness_score += 1
+        if working_spec.target_users:
+            richness_score += 1
+        if working_spec.screens or working_spec.core_flows or working_spec.data_model_needs:
+            richness_score += 1
+
+        return richness_score >= 4
+
+    def _latest_user_message(self, state: AgentSessionState) -> str:
+        for message in reversed(state.messages):
+            if message.role == ChatRole.USER:
+                return message.content.strip()
+        return ""
+
+    @classmethod
+    def _looks_non_blocking_gap(cls, text: str) -> bool:
+        lowered = text.strip().lower()
+        if not lowered:
+            return False
+        if any(marker.lower() in lowered for marker in cls.CORE_GAP_MARKERS):
+            return False
+        return any(marker.lower() in lowered for marker in cls.NON_BLOCKING_GAP_MARKERS)

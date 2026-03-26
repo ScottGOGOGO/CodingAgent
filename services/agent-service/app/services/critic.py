@@ -7,8 +7,8 @@ from langchain_core.prompts import ChatPromptTemplate
 
 from app.models import AgentSessionState, EvaluationResult, StructuredCriticOutput
 from app.services.errors import GenerationFailure
-from app.services.json_parser import parse_json_response
 from app.services.model_provider import ModelProvider
+from app.services.structured_output import invoke_structured_json
 
 
 class CriticService:
@@ -45,14 +45,12 @@ class CriticService:
                 operations=dumps([item.model_dump(mode="json", by_alias=True) for item in state.file_operations], ensure_ascii=False),
                 context_paths="\n".join(state.last_context_paths) or "无",
             )
-            try:
-                result = model.with_structured_output(
-                    StructuredCriticOutput,
-                    method="json_mode",
-                ).invoke(messages)
-            except Exception:
-                response = model.invoke(messages)
-                result = parse_json_response(response.content, StructuredCriticOutput)
+            result = invoke_structured_json(
+                model=model,
+                messages=messages,
+                output_schema=StructuredCriticOutput,
+                repair_focus="重点修正 buildReadinessScore、requirementCoverageScore、summary 和 issues 的 JSON 结构。",
+            )
             issues = self._normalize_issues(result.issues)
             build_readiness_score = self._normalize_score(result.build_readiness_score, issues, fallback=0.6)
             requirement_coverage_score = self._normalize_score(result.requirement_coverage_score, issues, fallback=0.65)

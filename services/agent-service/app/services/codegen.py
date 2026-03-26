@@ -96,6 +96,8 @@ class CodeGenerationService:
                     "If you use type=write for an existing file, content must contain the complete final file from its first line to its last line. "
                     "If only part of an existing file changes, return patch hunks or before/after replacement data instead of a snippet. "
                     "When generating a fresh app, prefer a self-contained implementation if that is the most reliable way to return a complete, runnable project. "
+                    "For a fresh app or empty workspace, do not stop after the first few config files. "
+                    "In the same response you must also create complete app entry files such as src/main.tsx and src/App.tsx, plus any local modules they import. "
                     f"{USER_FACING_LANGUAGE_RULE}"
                     "Return valid JSON only with keys assistantSummary and operations. "
                     "Each operation must contain type, path, summary, and either content or hunks when required. "

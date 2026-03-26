@@ -66,3 +66,19 @@ def test_critic_normalizes_object_issues_and_missing_summary(monkeypatch) -> Non
     ]
     assert 0.0 <= result.build_readiness_score <= 1.0
     assert 0.0 <= result.requirement_coverage_score <= 1.0
+
+
+def test_structured_critic_output_accepts_string_scores_and_single_issue() -> None:
+    result = StructuredCriticOutput.model_validate(
+        {
+            "buildReadinessScore": "80%",
+            "requirementCoverageScore": "0.65",
+            "summary": {"text": "基本可执行"},
+            "issues": {"severity": "high", "title": "功能覆盖不足"},
+        }
+    )
+
+    assert result.build_readiness_score == 0.8
+    assert result.requirement_coverage_score == 0.65
+    assert result.summary == "text: 基本可执行"
+    assert result.issues == [{"severity": "high", "title": "功能覆盖不足"}]

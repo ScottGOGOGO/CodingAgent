@@ -83,6 +83,41 @@ def _build_error_excerpt(text: str, exc: json.JSONDecodeError) -> str:
     return excerpt
 
 
+def _coerce_text_input(value: object) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        parts = []
+        for item in value:
+            if isinstance(item, str):
+                parts.append(item)
+                continue
+            if isinstance(item, dict):
+                for key in ("text", "content", "value", "input", "output"):
+                    candidate = item.get(key)
+                    if candidate is not None:
+                        text = _coerce_text_input(candidate)
+                        if text:
+                            parts.append(text)
+                        break
+                else:
+                    parts.append(json.dumps(item, ensure_ascii=False))
+                continue
+            parts.append(str(item))
+        return "\n".join(part for part in parts if part).strip()
+    if isinstance(value, dict):
+        for key in ("text", "content", "value", "input", "output"):
+            candidate = value.get(key)
+            if candidate is not None:
+                text = _coerce_text_input(candidate)
+                if text:
+                    return text
+        return json.dumps(value, ensure_ascii=False)
+    return str(value)
+
+
 def _validate_parsed(parsed, schema: Type[BaseModel]) -> BaseModel:
     try:
         return schema.model_validate(parsed)
@@ -148,8 +183,8 @@ def _try_yaml_fallback(text: str, schema: Type[BaseModel]) -> Optional[BaseModel
     return None
 
 
-def parse_json_response(text: str, schema: Type[BaseModel]) -> BaseModel:
-    cleaned = text.strip()
+def parse_json_response(text: object, schema: Type[BaseModel]) -> BaseModel:
+    cleaned = _coerce_text_input(text).strip()
 
     if not cleaned:
         raise GenerationFailure("Qwen 返回了空响应，未提供 JSON 结果。")

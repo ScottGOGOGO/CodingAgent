@@ -11,6 +11,8 @@ from langgraph.graph import END, START, StateGraph
 from app.models import (
     AgentSessionState,
     ClarificationAnswer,
+    FileOperation,
+    PatchHunk,
     ProjectStatus,
     RepairContext,
     RunPhase,
@@ -237,38 +239,16 @@ class StrategyAdapter(ABC):
         workspace_snapshot = [WorkspaceFile.model_validate(item) for item in payload.get("workspace_snapshot", [])]
         self._set_run(state, RunPhase.VERIFY_LOOP, RunStatus.IN_PROGRESS)
 
-        if not state.file_operations:
-            state.status = ProjectStatus.ERROR
-            state.error = "代码生成器没有返回任何文件操作。"
-        else:
-            existing_paths = {item.path for item in workspace_snapshot}
-            final_paths = set(existing_paths)
-            for operation in state.file_operations:
-                if operation.type in {"write", "patch"}:
-                    final_paths.add(operation.path)
-                elif operation.type == "delete":
-                    final_paths.discard(operation.path)
+        verification_error = self._preflight_generation_error(state, workspace_snapshot)
+        if verification_error:
+            repaired_state = self._attempt_preflight_repair(state, workspace_snapshot, verification_error)
+            if repaired_state is not None:
+                state = repaired_state
+                verification_error = self._preflight_generation_error(state, workspace_snapshot)
 
-            required_paths = {"package.json", "index.html", "src/main.tsx", "src/App.tsx"}
-            if not required_paths.issubset(final_paths):
-                state.status = ProjectStatus.ERROR
-                state.error = "当前生成的文件操作还不能产出可运行的 React + Vite 应用。"
-            else:
-                placeholder_paths = self._find_placeholder_paths(state.file_operations)
-                if placeholder_paths:
-                    state.status = ProjectStatus.ERROR
-                    state.error = (
-                        "生成的文件操作中仍包含占位或 TODO 界面内容，涉及 "
-                        f"{', '.join(placeholder_paths)}。请先生成真实可用的用户页面，再进入审批。"
-                    )
-                else:
-                    missing_imports = self._find_missing_local_imports(state.file_operations, final_paths)
-                    if missing_imports:
-                        state.status = ProjectStatus.ERROR
-                        state.error = (
-                            "生成的文件操作中引用了尚未生成的本地文件："
-                            f"{', '.join(missing_imports)}。请补齐所有被引用的本地模块后再进入审批。"
-                        )
+        if verification_error:
+            state.status = ProjectStatus.ERROR
+            state.error = verification_error
 
         if state.error:
             state.run = RunSnapshot(
@@ -349,6 +329,130 @@ class StrategyAdapter(ABC):
         else:
             self._set_run(state, RunPhase.REPORT, RunStatus.COMPLETED)
         return {"state": state.as_contract()}
+
+    def _preflight_generation_error(
+        self,
+        state: AgentSessionState,
+        workspace_snapshot: List[WorkspaceFile],
+    ) -> Optional[str]:
+        if not state.file_operations:
+            return "代码生成器没有返回任何文件操作。"
+
+        existing_paths = {item.path for item in workspace_snapshot}
+        final_paths = set(existing_paths)
+        for operation in state.file_operations:
+            if operation.type in {"write", "patch"}:
+                final_paths.add(operation.path)
+            elif operation.type == "delete":
+                final_paths.discard(operation.path)
+
+        required_paths = {"package.json", "index.html", "src/main.tsx", "src/App.tsx"}
+        if not required_paths.issubset(final_paths):
+            return "当前生成的文件操作还不能产出可运行的 React + Vite 应用。"
+
+        placeholder_paths = self._find_placeholder_paths(state.file_operations)
+        if placeholder_paths:
+            return (
+                "生成的文件操作中仍包含占位或 TODO 界面内容，涉及 "
+                f"{', '.join(placeholder_paths)}。请先生成真实可用的用户页面，再进入审批。"
+            )
+
+        missing_imports = self._find_missing_local_imports(state.file_operations, final_paths)
+        if missing_imports:
+            return (
+                "生成的文件操作中引用了尚未生成的本地文件："
+                f"{', '.join(missing_imports)}。请补齐所有被引用的本地模块后再进入审批。"
+            )
+
+        return None
+
+    def _attempt_preflight_repair(
+        self,
+        state: AgentSessionState,
+        workspace_snapshot: List[WorkspaceFile],
+        error: str,
+    ) -> Optional[AgentSessionState]:
+        if state.app_spec is None or not state.file_operations:
+            return None
+
+        merged_snapshot = self._materialize_workspace_snapshot(workspace_snapshot, state.file_operations)
+        context_snapshot = self.context_builder.select(state, merged_snapshot)
+
+        try:
+            repaired_state = self.codegen.repair(
+                state,
+                state.app_spec,
+                context_snapshot,
+                RepairContext(
+                    attempt=1,
+                    category="requirement_mismatch",
+                    failedCommand="preflight validation",
+                    buildError=error,
+                ),
+            )
+            full_snapshot = self._materialize_workspace_snapshot(merged_snapshot, repaired_state.file_operations)
+            repaired_state.file_operations = self._snapshot_to_write_operations(full_snapshot)
+            repaired_state.file_change_summary = [operation.summary for operation in repaired_state.file_operations]
+            return repaired_state
+        except Exception:
+            return None
+
+    def _materialize_workspace_snapshot(
+        self,
+        workspace_snapshot: List[WorkspaceFile],
+        file_operations: List[FileOperation],
+    ) -> List[WorkspaceFile]:
+        lookup = {item.path: item.content for item in workspace_snapshot}
+
+        for operation in file_operations:
+            if operation.type == "delete":
+                lookup.pop(operation.path, None)
+                continue
+
+            if operation.type == "write":
+                lookup[operation.path] = operation.content or ""
+                continue
+
+            if operation.type == "patch":
+                base_content = lookup.get(operation.path, "")
+                lookup[operation.path] = self._apply_patch_hunks(base_content, operation.hunks, operation.fallback_content)
+
+        return [WorkspaceFile(path=path, content=content) for path, content in sorted(lookup.items())]
+
+    @staticmethod
+    def _snapshot_to_write_operations(files: List[WorkspaceFile]) -> List[FileOperation]:
+        return [
+            FileOperation(
+                type="write",
+                path=file.path,
+                summary=f"Write {file.path}.",
+                content=file.content,
+            )
+            for file in files
+        ]
+
+    @staticmethod
+    def _apply_patch_hunks(content: str, hunks: List[PatchHunk], fallback_content: Optional[str]) -> str:
+        updated = content
+
+        for hunk in hunks:
+            occurrence = max(1, hunk.occurrence)
+            start = -1
+            search_from = 0
+            for _ in range(occurrence):
+                start = updated.find(hunk.search, search_from)
+                if start == -1:
+                    break
+                search_from = start + len(hunk.search)
+
+            if start == -1:
+                if fallback_content is not None:
+                    return fallback_content
+                continue
+
+            updated = updated[:start] + hunk.replace + updated[start + len(hunk.search) :]
+
+        return updated
 
     @staticmethod
     def route_after_clarify(payload: Dict[str, Any]) -> str:

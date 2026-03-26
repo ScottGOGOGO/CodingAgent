@@ -8,8 +8,8 @@ from langchain_core.prompts import ChatPromptTemplate
 
 from app.models import AgentSessionState, AppSpec, DataModelNeed, FlowSpec, PlanStep, ScreenSpec, StructuredPlanOutput, StructuredSpecOutput
 from app.services.errors import GenerationFailure
-from app.services.json_parser import parse_json_response
 from app.services.model_provider import ModelProvider
+from app.services.structured_output import invoke_structured_json
 
 
 USER_FACING_LANGUAGE_RULE = (
@@ -45,6 +45,9 @@ class SpecBuilder:
                     "Return a JSON object with keys: title, summary, goal, targetUsers, screens, coreFlows, "
                     "dataModelNeeds, integrations, brandAndVisualDirection, constraints, successCriteria, assumptions.\n"
                     "All natural-language values in the JSON must be in Simplified Chinese.\n"
+                    'For screens, every item must be an object like {{"name": "首页", "purpose": "说明该页面的核心作用", "elements": ["按钮", "卡片"]}}. Do not return bare strings.\n'
+                    'For coreFlows, every item must be an object like {{"name": "注册流程", "steps": ["填写资料", "确认目标"], "success": "用户成功完成注册"}}. Do not return bare strings.\n'
+                    'For targetUsers, constraints, successCriteria, and assumptions, always return arrays of strings.\n'
                     "For dataModelNeeds.fields, return an array of strings, not objects. "
                     'Example: ["title (string)", "skillLevel (enum)"].',
                 ),
@@ -122,11 +125,16 @@ class SpecBuilder:
         try:
             model = self.provider.require_chat_model(role)  # type: ignore[arg-type]
             messages = prompt.format_messages(**payload)
-            try:
-                return model.with_structured_output(output_schema, method="json_mode").invoke(messages)
-            except Exception:
-                response = model.invoke(messages)
-                return parse_json_response(response.content, output_schema)
+            repair_focus = (
+                "重点修正 screens、coreFlows、dataModelNeeds 的对象结构，"
+                "并确保 targetUsers、constraints、successCriteria、assumptions 返回字符串数组。"
+            )
+            return invoke_structured_json(
+                model=model,
+                messages=messages,
+                output_schema=output_schema,
+                repair_focus=repair_focus,
+            )
         except Exception as exc:
             if isinstance(exc, GenerationFailure):
                 raise

@@ -77,6 +77,21 @@ class ClarificationQuestion(AppBaseModel):
     rationale: Optional[str] = None
     required: bool = True
 
+    @model_validator(mode="before")
+    @classmethod
+    def _coerce_model(cls, value: object) -> object:
+        if isinstance(value, str):
+            text = _stringify_model_value(value)
+            return {"question": text} if text else {}
+        return value
+
+    @field_validator("id", "question", "placeholder", "rationale", mode="before")
+    @classmethod
+    def _coerce_text(cls, value: object) -> object:
+        if value is None:
+            return value
+        return _stringify_model_value(value)
+
 
 class ClarificationAnswer(AppBaseModel):
     question_id: str = Field(alias="questionId")
@@ -98,12 +113,80 @@ class ScreenSpec(AppBaseModel):
     purpose: str = Field(default="", validation_alias=AliasChoices("purpose", "summary", "description"))
     elements: List[object] = Field(default_factory=list)
 
+    @model_validator(mode="before")
+    @classmethod
+    def _coerce_model(cls, value: object) -> object:
+        if isinstance(value, str):
+            text = _stringify_model_value(value)
+            return {"name": text, "elements": []} if text else {"elements": []}
+
+        if isinstance(value, list):
+            text = _stringify_model_value(value)
+            return {"name": text, "elements": []} if text else {"elements": []}
+
+        if isinstance(value, dict):
+            normalized = dict(value)
+            if "elements" not in normalized:
+                for alias in ("items", "sections", "features", "components"):
+                    candidate = normalized.get(alias)
+                    if candidate is not None:
+                        normalized["elements"] = candidate
+                        break
+            return normalized
+
+        return value
+
+    @field_validator("id", "name", "purpose", mode="before")
+    @classmethod
+    def _coerce_text(cls, value: object) -> str:
+        return _stringify_model_value(value)
+
+    @field_validator("elements", mode="before")
+    @classmethod
+    def _coerce_elements(cls, value: object) -> List[object]:
+        normalized: List[object] = []
+        for item in _ensure_list(value):
+            if item is None:
+                continue
+            if isinstance(item, dict):
+                text = _stringify_named_mapping(item) or _stringify_model_value(item)
+                normalized.append(text or item)
+                continue
+            if isinstance(item, list):
+                text = _stringify_model_value(item)
+                normalized.append(text or item)
+                continue
+            normalized.append(item)
+        return normalized
+
 
 class FlowSpec(AppBaseModel):
     id: str = ""
     name: str = Field(default="", validation_alias=AliasChoices("name", "title", "label"))
     steps: List[str] = Field(default_factory=list)
     success: str = Field(default="", validation_alias=AliasChoices("success", "outcome", "result"))
+
+    @model_validator(mode="before")
+    @classmethod
+    def _coerce_model(cls, value: object) -> object:
+        if isinstance(value, str):
+            text = _stringify_model_value(value)
+            return {"name": text, "steps": []} if text else {"steps": []}
+
+        if isinstance(value, list):
+            return {"steps": value}
+
+        return value
+
+    @field_validator("id", "name", "success", mode="before")
+    @classmethod
+    def _coerce_text(cls, value: object) -> str:
+        return _stringify_model_value(value)
+
+    @field_validator("steps", mode="before")
+    @classmethod
+    def _coerce_steps(cls, value: object) -> List[str]:
+        return _coerce_step_list(value)
 
 
 def _stringify_model_value(value: object) -> str:
@@ -185,6 +268,76 @@ def _coerce_operation_content(value: object) -> object:
     return value
 
 
+def _ensure_list(value: object) -> List[object]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return value
+    return [value]
+
+
+def _coerce_string_list(value: object) -> List[str]:
+    normalized: List[str] = []
+    for item in _ensure_list(value):
+        text = _stringify_model_value(item)
+        if text:
+            normalized.append(text)
+    return normalized
+
+
+def _coerce_step_list(value: object) -> List[str]:
+    normalized: List[str] = []
+
+    for item in _ensure_list(value):
+        if isinstance(item, dict):
+            title = _stringify_model_value(item.get("title") or item.get("name") or item.get("step"))
+            detail = _stringify_model_value(item.get("description") or item.get("detail") or item.get("summary"))
+            if title and detail and detail != title:
+                text = f"{title}: {detail}"
+            else:
+                text = title or detail or _stringify_model_value(item)
+        else:
+            text = _stringify_model_value(item)
+
+        if text:
+            normalized.append(text)
+
+    return normalized
+
+
+def _coerce_score_value(value: object) -> Optional[float]:
+    if value is None:
+        return None
+
+    candidate = value
+    if isinstance(value, dict):
+        for key in ("score", "value", "rating", "buildReadinessScore", "requirementCoverageScore"):
+            nested = value.get(key)
+            if nested is not None:
+                candidate = nested
+                break
+
+    if isinstance(candidate, (int, float)):
+        return float(candidate)
+
+    text = _stringify_model_value(candidate)
+    if not text:
+        return None
+
+    percent = text.endswith("%")
+    if percent:
+        text = text[:-1].strip()
+
+    try:
+        number = float(text)
+    except (TypeError, ValueError):
+        return None
+
+    if percent or number > 1:
+        number /= 100.0
+    return number
+
+
 class DataModelNeed(AppBaseModel):
     entity: str = Field(default="", validation_alias=AliasChoices("entity", "name", "title"))
     fields: List[str] = Field(default_factory=list)
@@ -240,6 +393,23 @@ class WorkingSpec(AppBaseModel):
     constraints: List[str] = Field(default_factory=list)
     success_criteria: List[str] = Field(default_factory=list, alias="successCriteria")
     assumptions: List[str] = Field(default_factory=list)
+
+    @field_validator("title", "summary", "goal", mode="before")
+    @classmethod
+    def _coerce_text(cls, value: object) -> Optional[str]:
+        if value is None:
+            return None
+        return _stringify_model_value(value)
+
+    @field_validator("target_users", "constraints", "success_criteria", "assumptions", mode="before")
+    @classmethod
+    def _coerce_string_lists(cls, value: object) -> List[str]:
+        return _coerce_string_list(value)
+
+    @field_validator("screens", "core_flows", "data_model_needs", "integrations", mode="before")
+    @classmethod
+    def _coerce_collection_fields(cls, value: object) -> List[object]:
+        return _ensure_list(value)
 
 
 class AppSpec(AppBaseModel):
@@ -450,6 +620,31 @@ class StructuredClarifierOutput(AppBaseModel):
     assumptions: List[object] = Field(default_factory=list)
     working_spec: WorkingSpec = Field(default_factory=WorkingSpec, alias="workingSpec")
 
+    @field_validator("action", "summary", mode="before")
+    @classmethod
+    def _coerce_text(cls, value: object) -> Optional[str]:
+        if value is None:
+            return None
+        return _stringify_model_value(value)
+
+    @field_validator("clarity_score", mode="before")
+    @classmethod
+    def _coerce_score(cls, value: object) -> Optional[float]:
+        return _coerce_score_value(value)
+
+    @field_validator("missing_information", "questions", "assumptions", mode="before")
+    @classmethod
+    def _coerce_collections(cls, value: object) -> List[object]:
+        return _ensure_list(value)
+
+    @field_validator("working_spec", mode="before")
+    @classmethod
+    def _coerce_working_spec(cls, value: object) -> object:
+        if isinstance(value, str):
+            text = _stringify_model_value(value)
+            return {"summary": text} if text else {}
+        return value
+
 
 class StructuredSpecOutput(AppBaseModel):
     title: str = ""
@@ -465,6 +660,21 @@ class StructuredSpecOutput(AppBaseModel):
     success_criteria: List[str] = Field(default_factory=list, alias="successCriteria")
     assumptions: List[str] = Field(default_factory=list)
 
+    @field_validator("title", "summary", "goal", mode="before")
+    @classmethod
+    def _coerce_text(cls, value: object) -> str:
+        return _stringify_model_value(value)
+
+    @field_validator("target_users", "constraints", "success_criteria", "assumptions", mode="before")
+    @classmethod
+    def _coerce_string_lists(cls, value: object) -> List[str]:
+        return _coerce_string_list(value)
+
+    @field_validator("screens", "core_flows", "data_model_needs", "integrations", mode="before")
+    @classmethod
+    def _coerce_collection_fields(cls, value: object) -> List[object]:
+        return _ensure_list(value)
+
 
 class StructuredPlanOutput(AppBaseModel):
     steps: List[str]
@@ -473,27 +683,7 @@ class StructuredPlanOutput(AppBaseModel):
     @field_validator("steps", mode="before")
     @classmethod
     def _coerce_steps(cls, value: object) -> List[str]:
-        if value is None:
-            return []
-
-        items = value if isinstance(value, list) else [value]
-        normalized: List[str] = []
-
-        for item in items:
-            if isinstance(item, dict):
-                title = _stringify_model_value(item.get("title") or item.get("name") or item.get("step"))
-                detail = _stringify_model_value(item.get("description") or item.get("detail") or item.get("summary"))
-                if title and detail:
-                    text = f"{title}: {detail}"
-                else:
-                    text = title or detail or _stringify_model_value(item)
-            else:
-                text = _stringify_model_value(item)
-
-            if text:
-                normalized.append(text)
-
-        return normalized
+        return _coerce_step_list(value)
 
 
 class StructuredCriticOutput(AppBaseModel):
@@ -502,11 +692,33 @@ class StructuredCriticOutput(AppBaseModel):
     summary: Optional[str] = None
     issues: List[object] = Field(default_factory=list)
 
+    @field_validator("build_readiness_score", "requirement_coverage_score", mode="before")
+    @classmethod
+    def _coerce_scores(cls, value: object) -> Optional[float]:
+        return _coerce_score_value(value)
+
+    @field_validator("summary", mode="before")
+    @classmethod
+    def _coerce_summary(cls, value: object) -> Optional[str]:
+        if value is None:
+            return None
+        return _stringify_model_value(value)
+
+    @field_validator("issues", mode="before")
+    @classmethod
+    def _coerce_issues(cls, value: object) -> List[object]:
+        return _ensure_list(value)
+
 
 class StructuredPatchHunkOutput(AppBaseModel):
     search: Optional[str] = Field(default=None, validation_alias=AliasChoices("search", "find", "old", "before"))
     replace: Optional[str] = Field(default=None, validation_alias=AliasChoices("replace", "replacement", "new", "after"))
     occurrence: Optional[int] = Field(default=1, validation_alias=AliasChoices("occurrence", "index"))
+
+    @field_validator("search", "replace", mode="before")
+    @classmethod
+    def _coerce_patch_content(cls, value: object) -> object:
+        return _coerce_operation_content(value)
 
 
 class StructuredFileOperationOutput(AppBaseModel):
@@ -556,6 +768,16 @@ class StructuredFileOperationOutput(AppBaseModel):
     @classmethod
     def _coerce_content_fields(cls, value: object) -> object:
         return _coerce_operation_content(value)
+
+    @field_validator("search", "replace", mode="before")
+    @classmethod
+    def _coerce_patch_fields(cls, value: object) -> object:
+        return _coerce_operation_content(value)
+
+    @field_validator("hunks", mode="before")
+    @classmethod
+    def _coerce_hunks(cls, value: object) -> List[object]:
+        return _ensure_list(value)
 
 
 class GeneratedCodeOutput(AppBaseModel):

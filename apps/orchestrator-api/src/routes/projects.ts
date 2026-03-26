@@ -34,6 +34,7 @@ const sendMessageSchema = {
     type: "object" as const,
     properties: {
       content: { type: "string" as const },
+      userMessage: { type: "string" as const },
       reasoningMode: { type: "string" as const, enum: ["plan_solve", "react"] },
       clarificationAnswers: {
         anyOf: [
@@ -106,12 +107,13 @@ export function registerProjectRoutes(
     const { id } = request.params as { id: string };
     const body = (request.body ?? {}) as {
       content?: string;
+      userMessage?: string;
       clarificationAnswers?: Record<string, string> | ClarificationAnswer[];
       reasoningMode?: "plan_solve" | "react";
     };
     const project = await projectService.sendMessage(
       id,
-      body.content,
+      body.content ?? body.userMessage,
       normalizeAnswers(body.clarificationAnswers),
       body.reasoningMode,
     );

@@ -10,7 +10,7 @@ import type {
   WorkspaceFile,
 } from "@vide/contracts";
 
-const DEFAULT_TIMEOUT_MS = 300_000;
+const DEFAULT_TIMEOUT_MS = 420_000;
 
 export class AgentClient {
   constructor(
