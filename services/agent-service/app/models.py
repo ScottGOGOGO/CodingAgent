@@ -311,7 +311,15 @@ def _coerce_score_value(value: object) -> Optional[float]:
 
     candidate = value
     if isinstance(value, dict):
-        for key in ("score", "value", "rating", "buildReadinessScore", "requirementCoverageScore"):
+        for key in (
+            "score",
+            "value",
+            "rating",
+            "buildReadinessScore",
+            "requirementCoverageScore",
+            "designQualityScore",
+            "interactionQualityScore",
+        ):
             nested = value.get(key)
             if nested is not None:
                 candidate = nested
@@ -380,6 +388,32 @@ class DataModelNeed(AppBaseModel):
         return normalized
 
 
+class DesignTargets(AppBaseModel):
+    visual_mood: str = Field(default="", alias="visualMood")
+    layout_energy: str = Field(default="", alias="layoutEnergy")
+    color_strategy: str = Field(default="", alias="colorStrategy")
+    component_tone: str = Field(default="", alias="componentTone")
+    motion_intensity: str = Field(default="", alias="motionIntensity")
+    interaction_focus: List[str] = Field(default_factory=list, alias="interactionFocus")
+
+    @field_validator(
+        "visual_mood",
+        "layout_energy",
+        "color_strategy",
+        "component_tone",
+        "motion_intensity",
+        mode="before",
+    )
+    @classmethod
+    def _coerce_text(cls, value: object) -> str:
+        return _stringify_model_value(value)
+
+    @field_validator("interaction_focus", mode="before")
+    @classmethod
+    def _coerce_focus_items(cls, value: object) -> List[str]:
+        return _coerce_string_list(value)
+
+
 class WorkingSpec(AppBaseModel):
     title: Optional[str] = None
     summary: Optional[str] = None
@@ -423,6 +457,7 @@ class AppSpec(AppBaseModel):
     data_model_needs: List[DataModelNeed] = Field(default_factory=list, alias="dataModelNeeds")
     integrations: List[str] = Field(default_factory=list)
     brand_and_visual_direction: str = Field(alias="brandAndVisualDirection")
+    design_targets: DesignTargets = Field(default_factory=DesignTargets, alias="designTargets")
     constraints: List[str] = Field(default_factory=list)
     success_criteria: List[str] = Field(default_factory=list, alias="successCriteria")
     assumptions: List[str] = Field(default_factory=list)
@@ -482,8 +517,11 @@ class ProviderRoute(AppBaseModel):
 class EvaluationResult(AppBaseModel):
     build_readiness_score: float = Field(alias="buildReadinessScore")
     requirement_coverage_score: float = Field(alias="requirementCoverageScore")
+    design_quality_score: float = Field(default=0.0, alias="designQualityScore")
+    interaction_quality_score: float = Field(default=0.0, alias="interactionQualityScore")
     summary: str
     issues: List[str] = Field(default_factory=list)
+    design_warnings: List[str] = Field(default_factory=list, alias="designWarnings")
 
 
 class UsageMetrics(AppBaseModel):
@@ -498,17 +536,6 @@ class ApprovalRequest(AppBaseModel):
     summary: str
     created_at: str = Field(alias="createdAt")
     expires_at: Optional[str] = Field(default=None, alias="expiresAt")
-
-
-class ToolCallTrace(AppBaseModel):
-    id: str
-    run_id: str = Field(alias="runId")
-    tool: str
-    started_at: str = Field(alias="startedAt")
-    finished_at: Optional[str] = Field(default=None, alias="finishedAt")
-    status: Literal["started", "completed", "failed"]
-    input_summary: Optional[str] = Field(default=None, alias="inputSummary")
-    output_summary: Optional[str] = Field(default=None, alias="outputSummary")
 
 
 class RunSnapshot(AppBaseModel):
@@ -561,7 +588,7 @@ class SessionRecord(AppBaseModel):
 
 class RepairContext(AppBaseModel):
     attempt: int
-    category: Literal["dependency", "type_build", "preview_boot", "requirement_mismatch"]
+    category: Literal["dependency", "type_build", "preview_boot", "requirement_mismatch", "design_polish"]
     failed_command: str = Field(alias="failedCommand")
     build_error: str = Field(alias="buildError")
 
@@ -689,10 +716,19 @@ class StructuredPlanOutput(AppBaseModel):
 class StructuredCriticOutput(AppBaseModel):
     build_readiness_score: Optional[float] = Field(default=None, alias="buildReadinessScore")
     requirement_coverage_score: Optional[float] = Field(default=None, alias="requirementCoverageScore")
+    design_quality_score: Optional[float] = Field(default=None, alias="designQualityScore")
+    interaction_quality_score: Optional[float] = Field(default=None, alias="interactionQualityScore")
     summary: Optional[str] = None
     issues: List[object] = Field(default_factory=list)
+    design_warnings: List[object] = Field(default_factory=list, alias="designWarnings")
 
-    @field_validator("build_readiness_score", "requirement_coverage_score", mode="before")
+    @field_validator(
+        "build_readiness_score",
+        "requirement_coverage_score",
+        "design_quality_score",
+        "interaction_quality_score",
+        mode="before",
+    )
     @classmethod
     def _coerce_scores(cls, value: object) -> Optional[float]:
         return _coerce_score_value(value)
@@ -704,7 +740,7 @@ class StructuredCriticOutput(AppBaseModel):
             return None
         return _stringify_model_value(value)
 
-    @field_validator("issues", mode="before")
+    @field_validator("issues", "design_warnings", mode="before")
     @classmethod
     def _coerce_issues(cls, value: object) -> List[object]:
         return _ensure_list(value)

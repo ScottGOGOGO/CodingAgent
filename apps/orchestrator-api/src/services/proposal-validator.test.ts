@@ -112,6 +112,64 @@ test("detectStaticValidationIssue flags missing react-router-dom dependency", ()
   assert.match(detectStaticValidationIssue(files) ?? "", /react-router-dom/i);
 });
 
+test("detectStaticValidationIssue flags missing lucide-react dependency", () => {
+  const files: WorkspaceFile[] = [
+    {
+      path: "package.json",
+      content: JSON.stringify({
+        dependencies: {
+          react: "^18.3.1",
+          "react-dom": "^18.3.1",
+        },
+      }),
+    },
+    {
+      path: "src/App.tsx",
+      content: "import { Sparkles } from 'lucide-react';\nexport default function App() { return <Sparkles />; }\n",
+    },
+  ];
+
+  assert.match(detectStaticValidationIssue(files) ?? "", /lucide-react/i);
+});
+
+test("detectStaticValidationIssue flags malformed critical json files before build", () => {
+  const files: WorkspaceFile[] = [
+    {
+      path: "package.json",
+      content: JSON.stringify({
+        name: "demo",
+        private: true,
+      }),
+    },
+    {
+      path: "tsconfig.json",
+      content: '{\n  "compilerOptions": {\n    "target": "ES2020"\n  },\n  "include": ["src"]\n',
+    },
+  ];
+
+  assert.match(detectStaticValidationIssue(files) ?? "", /tsconfig\.json/);
+  assert.match(detectStaticValidationIssue(files) ?? "", /JSON/);
+});
+
+test("detectStaticValidationIssue flags truncated index html before build", () => {
+  const files: WorkspaceFile[] = [
+    {
+      path: "package.json",
+      content: JSON.stringify({
+        name: "demo",
+        private: true,
+      }),
+    },
+    {
+      path: "index.html",
+      content: "<!doctype html>\n<html>\n  <head>\n    <meta charset=\"UTF-8\" />\n    <link rel=",
+    },
+  ];
+
+  assert.match(detectStaticValidationIssue(files) ?? "", /index\.html/);
+  assert.match(detectStaticValidationIssue(files) ?? "", /截断|不完整/);
+});
+
 test("ensureTailwindToolchain adds the missing dependencies and config files", async () => {
   const workspaceRoot = await mkdtemp(join(tmpdir(), "vide-tailwind-autofix-"));
   const validator = new ProposalValidator({} as never, {} as never, {} as never);
@@ -151,6 +209,45 @@ test("ensureTailwindToolchain adds the missing dependencies and config files", a
 
     const postcssConfig = await readFile(join(workspaceRoot, "postcss.config.js"), "utf-8");
     assert.match(postcssConfig, /tailwindcss/);
+  } finally {
+    await rm(workspaceRoot, { recursive: true, force: true });
+  }
+});
+
+test("ensureRuntimeDependency adds missing visual runtime dependencies to dependencies", async () => {
+  const workspaceRoot = await mkdtemp(join(tmpdir(), "vide-runtime-dep-autofix-"));
+  const validator = new ProposalValidator({} as never, {} as never, {} as never);
+  const project = makeProject(workspaceRoot);
+
+  try {
+    await writeFile(
+      join(workspaceRoot, "package.json"),
+      JSON.stringify(
+        {
+          name: "demo",
+          private: true,
+          dependencies: {
+            react: "^18.3.1",
+            "react-dom": "^18.3.1",
+          },
+        },
+        null,
+        2,
+      ) + "\n",
+      "utf-8",
+    );
+
+    const changed = await (validator as any).ensureRuntimeDependency(
+      project,
+      new Error("lucide-react is imported in the generated app, but lucide-react is missing from package.json."),
+      "lucide-react",
+      "^0.511.0",
+    );
+
+    assert.equal(changed, true);
+
+    const packageJson = await readFile(join(workspaceRoot, "package.json"), "utf-8");
+    assert.match(packageJson, /"lucide-react": "\^0\.511\.0"/);
   } finally {
     await rm(workspaceRoot, { recursive: true, force: true });
   }

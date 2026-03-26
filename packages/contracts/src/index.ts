@@ -88,6 +88,15 @@ export interface DataModelNeed {
   notes?: string;
 }
 
+export interface DesignTargets {
+  visualMood: string;
+  layoutEnergy: string;
+  colorStrategy: string;
+  componentTone: string;
+  motionIntensity: string;
+  interactionFocus: string[];
+}
+
 export interface WorkingSpec {
   title?: string;
   summary?: string;
@@ -114,6 +123,7 @@ export interface AppSpec {
   dataModelNeeds: DataModelNeed[];
   integrations: string[];
   brandAndVisualDirection: string;
+  designTargets: DesignTargets;
   constraints: string[];
   successCriteria: string[];
   assumptions: string[];
@@ -172,8 +182,11 @@ export interface ProviderRoute {
 export interface EvaluationResult {
   buildReadinessScore: number;
   requirementCoverageScore: number;
+  designQualityScore: number;
+  interactionQualityScore: number;
   summary: string;
   issues: string[];
+  designWarnings: string[];
 }
 
 export interface UsageMetrics {
@@ -331,7 +344,7 @@ export interface AgentTurnResponse {
 
 export interface RepairContext {
   attempt: number;
-  category: "dependency" | "type_build" | "preview_boot" | "requirement_mismatch";
+  category: "dependency" | "type_build" | "preview_boot" | "requirement_mismatch" | "design_polish";
   failedCommand: string;
   buildError: string;
 }

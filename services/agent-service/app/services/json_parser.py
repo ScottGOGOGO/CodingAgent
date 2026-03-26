@@ -122,7 +122,7 @@ def _validate_parsed(parsed, schema: Type[BaseModel]) -> BaseModel:
     try:
         return schema.model_validate(parsed)
     except Exception as exc:
-        raise GenerationFailure(f"Qwen 返回的 JSON 与预期 schema 不匹配：{exc}") from exc
+        raise GenerationFailure(f"模型返回的 JSON 与预期 schema 不匹配：{exc}") from exc
 
 
 def _try_json_variants(text: str, schema: Type[BaseModel]) -> Optional[BaseModel]:
@@ -187,7 +187,7 @@ def parse_json_response(text: object, schema: Type[BaseModel]) -> BaseModel:
     cleaned = _coerce_text_input(text).strip()
 
     if not cleaned:
-        raise GenerationFailure("Qwen 返回了空响应，未提供 JSON 结果。")
+        raise GenerationFailure("模型返回了空响应，未提供 JSON 结果。")
 
     # Strategy 1: extract the outermost JSON object/array directly.
     candidate = _extract_json_substring(cleaned)
@@ -217,6 +217,6 @@ def parse_json_response(text: object, schema: Type[BaseModel]) -> BaseModel:
         parsed = json.loads(fallback)
     except json.JSONDecodeError as exc:
         excerpt = _build_error_excerpt(fallback, exc)
-        raise GenerationFailure(f"Qwen 返回了无效 JSON：{exc}。片段={excerpt}") from exc
+        raise GenerationFailure(f"模型返回了无效 JSON：{exc}。片段={excerpt}") from exc
 
     return _validate_parsed(parsed, schema)

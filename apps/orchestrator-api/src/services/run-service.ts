@@ -19,6 +19,7 @@ import { ConflictError, NotFoundError } from "../errors.js";
 import type { ProjectEventBus } from "../events.js";
 import type { ProjectStore } from "../store.js";
 import type { WorkspaceService } from "../workspace.js";
+import { CommandExecutionError } from "../runner.js";
 import { ExecutionWorker } from "./execution-worker.js";
 import type { ProposalValidator } from "./proposal-validator.js";
 
@@ -94,6 +95,39 @@ function formatClarificationAnswers(
   }
 
   return lines.length > 1 ? lines.join("\n") : undefined;
+}
+
+function extractFailureExcerpt(output: string): string | undefined {
+  const cleanedLines = output
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .filter((line) => !/^> /.test(line))
+    .filter((line) => !/^npm (notice|warn)/i.test(line));
+
+  if (!cleanedLines.length) {
+    return undefined;
+  }
+
+  const interestingLines = cleanedLines.filter((line) =>
+    /error|failed|unexpected|invalid|parse|syntax|cannot|missing|ts\d+|vite|rollup|json|html|index\.html|tsconfig/i.test(line),
+  );
+  const excerpt = (interestingLines.length ? interestingLines : cleanedLines).slice(-4).join(" | ");
+  return excerpt.length > 420 ? `${excerpt.slice(0, 417)}...` : excerpt;
+}
+
+export function summarizeRunFailure(error: unknown): string {
+  if (error instanceof CommandExecutionError) {
+    const command = error.command.join(" ");
+    const excerpt = extractFailureExcerpt(error.output);
+    return excerpt ? `${command} 失败：${excerpt}` : `命令执行失败：${command}`;
+  }
+
+  if (error instanceof Error) {
+    return error.message || "Unknown validation error";
+  }
+
+  return "Unknown validation error";
 }
 
 export function initialSessionState(projectId: string, sessionId: string, reasoningMode: ReasoningMode): AgentSessionState {
@@ -332,20 +366,22 @@ export class RunService {
     error: unknown,
     state: AgentSessionState,
   ): Promise<RunCreateResponse> {
-    const message = error instanceof Error ? error.message : "Unknown validation error";
+    const message = summarizeRunFailure(error);
 
     session.state = {
       ...state,
+      evaluation: undefined,
       error: message,
       status: "failed",
       runPhase: "report",
-      assistantSummary: `Generation failed: ${message}`,
+      assistantSummary: `生成失败：${message}`,
     };
     appendMessage(session.state, "assistant", session.state.assistantSummary);
 
     run.status = "failed";
     run.phase = "report";
     run.error = message;
+    run.evaluation = undefined;
     run.state = session.state;
     run.updatedAt = now();
 
@@ -378,19 +414,21 @@ export class RunService {
     userMessage?: string,
     clarificationAnswers?: ClarificationAnswer[],
   ): Promise<RunCreateResponse> {
-    const message = error instanceof Error ? error.message : "Unknown agent execution error";
+    const message = summarizeRunFailure(error);
     const userTurn = userMessage?.trim() || formatClarificationAnswers(session.state, clarificationAnswers);
 
     appendMessage(session.state, "user", userTurn);
+    session.state.evaluation = undefined;
     session.state.error = message;
     session.state.status = "failed";
     session.state.runPhase = "report";
-    session.state.assistantSummary = `Generation failed: ${message}`;
+    session.state.assistantSummary = `生成失败：${message}`;
     appendMessage(session.state, "assistant", session.state.assistantSummary);
 
     run.status = "failed";
     run.phase = "report";
     run.error = message;
+    run.evaluation = undefined;
     run.state = session.state;
     run.updatedAt = now();
 

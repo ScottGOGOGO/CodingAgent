@@ -1,8 +1,7 @@
 import { useEffect, useState } from "react";
-import type { ProjectEvent, ProjectRecord, ReasoningMode } from "@vide/contracts";
+import type { ProjectEvent, ProjectRecord } from "@vide/contracts";
 import { api, getApiBase } from "./useApi.js";
 
-export type ClarificationDrafts = Record<string, string>;
 const ACTIVE_RUN_STATUSES = new Set(["queued", "in_progress", "running"]);
 const ACTIVE_PREVIEW_STATUSES = new Set(["starting", "running"]);
 
@@ -96,35 +95,18 @@ export function useProject() {
     }
   }
 
-  async function sendMessage(content: string, mode: ReasoningMode) {
+  async function sendMessage(content: string) {
     if (!project || !content.trim()) return;
     setBusy(true);
     setError(null);
     try {
       const response = await api<{ project: ProjectRecord }>(`/projects/${project.id}/messages`, {
         method: "POST",
-        body: JSON.stringify({ content: content.trim(), reasoningMode: mode }),
+        body: JSON.stringify({ content: content.trim() }),
       });
       setProject(response.project);
     } catch (issue) {
       setError(issue instanceof Error ? issue.message : "Unable to send the message.");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function submitClarifications(drafts: ClarificationDrafts, mode: ReasoningMode) {
-    if (!project) return;
-    setBusy(true);
-    setError(null);
-    try {
-      const response = await api<{ project: ProjectRecord }>(`/projects/${project.id}/messages`, {
-        method: "POST",
-        body: JSON.stringify({ clarificationAnswers: drafts, reasoningMode: mode }),
-      });
-      setProject(response.project);
-    } catch (issue) {
-      setError(issue instanceof Error ? issue.message : "Unable to submit clarification answers.");
     } finally {
       setBusy(false);
     }
@@ -146,15 +128,6 @@ export function useProject() {
     }
   }
 
-  async function changeMode(nextMode: ReasoningMode) {
-    if (!project) return;
-    const response = await api<{ project: ProjectRecord }>(`/projects/${project.id}/mode`, {
-      method: "POST",
-      body: JSON.stringify({ reasoningMode: nextMode }),
-    });
-    setProject(response.project);
-  }
-
   return {
     project,
     logs,
@@ -162,8 +135,6 @@ export function useProject() {
     busy,
     createProject,
     sendMessage,
-    submitClarifications,
     confirmGeneration,
-    changeMode,
   };
 }

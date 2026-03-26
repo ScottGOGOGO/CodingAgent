@@ -21,12 +21,14 @@ class CriticService:
                 (
                     "system",
                     "You are the critic subgraph for a coding agent. "
-                    "Judge whether the proposed code changes are likely to build and whether they satisfy the product requirements. "
+                    "Judge whether the proposed code changes are likely to build, whether they satisfy the product requirements, and whether the UI quality is strong enough for approval. "
                     "Placeholder routes, TODO text, 待实现 labels, lorem ipsum, blank scaffolding, or screen shells with no substantive UI are blocking failures and must be reported as critical issues. "
                     "A route-only skeleton is not approval-ready even if it technically builds. "
+                    "Treat generic template UI as a quality failure signal: simple header plus nav plus plain card grid, flat white panels with weak hierarchy, missing theme tokens, or almost no interaction feedback should reduce design quality. "
+                    "Tailwind used only for spacing without a theme system, or a UI that ignores the supplied designTargets, should also reduce the design score. "
                     "Unless the user explicitly requests another language, summary and issues must be written in Simplified Chinese. "
                     "If you include severity values in issue objects, use critical/high/medium/low. "
-                    "Return valid JSON only with keys: buildReadinessScore, requirementCoverageScore, summary, issues.",
+                    "Return valid JSON only with keys: buildReadinessScore, requirementCoverageScore, designQualityScore, interactionQualityScore, summary, issues, designWarnings.",
                 ),
                 (
                     "human",
@@ -49,17 +51,33 @@ class CriticService:
                 model=model,
                 messages=messages,
                 output_schema=StructuredCriticOutput,
-                repair_focus="重点修正 buildReadinessScore、requirementCoverageScore、summary 和 issues 的 JSON 结构。",
+                repair_focus=(
+                    "重点修正 buildReadinessScore、requirementCoverageScore、designQualityScore、"
+                    "interactionQualityScore、summary、issues 和 designWarnings 的 JSON 结构。"
+                ),
             )
             issues = self._normalize_issues(result.issues)
+            design_warnings = self._merge_design_warnings(
+                self._normalize_text_items(result.design_warnings),
+                self._infer_design_warnings(state),
+            )
             build_readiness_score = self._normalize_score(result.build_readiness_score, issues, fallback=0.6)
             requirement_coverage_score = self._normalize_score(result.requirement_coverage_score, issues, fallback=0.65)
-            summary = self._normalize_summary(result.summary, issues)
+            design_quality_score = self._normalize_design_score(result.design_quality_score, design_warnings, fallback=0.74)
+            interaction_quality_score = self._normalize_design_score(
+                result.interaction_quality_score,
+                self._interaction_warnings_only(design_warnings),
+                fallback=0.7,
+            )
+            summary = self._normalize_summary(result.summary, issues, design_warnings)
             return EvaluationResult(
                 buildReadinessScore=build_readiness_score,
                 requirementCoverageScore=requirement_coverage_score,
+                designQualityScore=design_quality_score,
+                interactionQualityScore=interaction_quality_score,
                 summary=summary,
                 issues=issues,
+                designWarnings=design_warnings,
             )
         except Exception as exc:
             if isinstance(exc, GenerationFailure):
@@ -95,6 +113,39 @@ class CriticService:
             seen.add(item)
             deduped.append(item)
         return deduped
+
+    @staticmethod
+    def _normalize_text_items(items: List[object]) -> List[str]:
+        normalized: List[str] = []
+        for item in items or []:
+            if isinstance(item, dict):
+                title = str(item.get("title") or item.get("issue") or item.get("label") or "").strip()
+                detail = str(item.get("detail") or item.get("description") or item.get("summary") or "").strip()
+                text = ": ".join(part for part in (title, detail) if part) or str(item).strip()
+            else:
+                text = str(item).strip()
+            if text:
+                normalized.append(text)
+
+        deduped: List[str] = []
+        seen = set()
+        for item in normalized:
+            if item in seen:
+                continue
+            seen.add(item)
+            deduped.append(item)
+        return deduped
+
+    @staticmethod
+    def _merge_design_warnings(primary: List[str], inferred: List[str]) -> List[str]:
+        merged: List[str] = []
+        seen = set()
+        for warning in [*primary, *inferred]:
+            if not warning or warning in seen:
+                continue
+            seen.add(warning)
+            merged.append(warning)
+        return merged
 
     @staticmethod
     def _normalize_severity(value: str) -> str:
@@ -134,10 +185,100 @@ class CriticService:
         return max(0.0, min(1.0, fallback - penalty))
 
     @staticmethod
-    def _normalize_summary(summary: Optional[str], issues: List[str]) -> str:
+    def _normalize_design_score(score: Optional[float], warnings: List[str], fallback: float) -> float:
+        try:
+            if score is not None:
+                value = float(score)
+                return max(0.0, min(1.0, value))
+        except (TypeError, ValueError):
+            pass
+
+        penalty = min(0.32, len(warnings) * 0.08)
+        return max(0.0, min(1.0, fallback - penalty))
+
+    @staticmethod
+    def _normalize_summary(summary: Optional[str], issues: List[str], design_warnings: List[str]) -> str:
         normalized = (summary or "").strip()
         if normalized:
             return normalized
         if issues:
             return f"评审发现 {len(issues)} 个问题，执行前需要先处理。"
+        if design_warnings:
+            return f"评审建议先补强 {len(design_warnings)} 项视觉或交互细节，以提升演示完成度。"
         return "评审未发现阻塞执行的问题。"
+
+    @staticmethod
+    def _interaction_warnings_only(warnings: List[str]) -> List[str]:
+        interaction_markers = ("交互", "动效", "悬停", "反馈", "切换")
+        return [warning for warning in warnings if any(marker in warning for marker in interaction_markers)]
+
+    def _infer_design_warnings(self, state: AgentSessionState) -> List[str]:
+        warnings: List[str] = []
+        if not state.app_spec:
+            return warnings
+
+        if not self._has_tailwind_system(state):
+            warnings.append("当前方案还没有建立 Tailwind 主题系统，视觉语言仍容易退回普通模板化页面。")
+
+        if self._uses_single_surface_css(state):
+            warnings.append("页面结构仍偏普通首屏加卡片堆叠，背景构图和视觉层级不够鲜明。")
+
+        motion_intensity = (state.app_spec.design_targets.motion_intensity or "").strip()
+        if motion_intensity and "低" not in motion_intensity and not self._has_interaction_feedback(state):
+            warnings.append("关键页面缺少明确的交互动效或悬停反馈，互动体验仍然偏弱。")
+
+        return warnings
+
+    @staticmethod
+    def _has_tailwind_system(state: AgentSessionState) -> bool:
+        config_paths = {"tailwind.config.js", "tailwind.config.ts", "postcss.config.js", "postcss.config.cjs", "postcss.config.mjs"}
+        paths = {operation.path for operation in state.file_operations}
+        if paths.intersection(config_paths):
+            return True
+
+        combined = "\n".join(CriticService._operation_text_fragments(state))
+        return "tailwindcss" in combined or "@tailwind" in combined
+
+    @staticmethod
+    def _uses_single_surface_css(state: AgentSessionState) -> bool:
+        paths = {operation.path for operation in state.file_operations}
+        if "src/App.css" not in paths:
+            return False
+        if any(path.endswith("tailwind.config.js") or path.endswith("tailwind.config.ts") for path in paths):
+            return False
+
+        combined = "\n".join(CriticService._operation_text_fragments(state))
+        generic_markers = ("<header", "<nav", "className=\"card", "className='card", ".card {", "hero", "dashboard")
+        marker_hits = sum(1 for marker in generic_markers if marker in combined)
+        return marker_hits >= 2
+
+    @staticmethod
+    def _has_interaction_feedback(state: AgentSessionState) -> bool:
+        combined = "\n".join(CriticService._operation_text_fragments(state))
+        interaction_markers = (
+            "framer-motion",
+            "motion.",
+            "whileHover",
+            "whileInView",
+            "animate-",
+            "transition",
+            "hover:",
+            "group-hover",
+        )
+        return any(marker in combined for marker in interaction_markers)
+
+    @staticmethod
+    def _operation_text_fragments(state: AgentSessionState) -> List[str]:
+        texts: List[str] = []
+        for operation in state.file_operations:
+            for value in (
+                operation.content,
+                operation.fallback_content,
+                getattr(operation, "fallbackContent", None),
+            ):
+                if isinstance(value, str) and value.strip():
+                    texts.append(value)
+            for hunk in operation.hunks:
+                if hunk.replace.strip():
+                    texts.append(hunk.replace)
+        return texts

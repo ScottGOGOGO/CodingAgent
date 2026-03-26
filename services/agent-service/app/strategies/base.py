@@ -24,8 +24,8 @@ from app.services.clarifier import DynamicClarifier, append_assistant_message, a
 from app.services.codegen import CodeGenerationService
 from app.services.context_builder import ContextBuilder
 from app.services.critic import CriticService
+from app.services.model_provider import ModelProvider
 from app.services.spec_builder import SpecBuilder
-from app.services.provider_router import ProviderRouter
 
 
 class StrategyAdapter(ABC):
@@ -89,7 +89,7 @@ class StrategyAdapter(ABC):
     )
 
     def __init__(self) -> None:
-        self.router = ProviderRouter()
+        self.model_provider = ModelProvider()
         self.clarifier = DynamicClarifier()
         self.spec_builder = SpecBuilder()
         self.context_builder = ContextBuilder()
@@ -120,7 +120,7 @@ class StrategyAdapter(ABC):
                 ],
             )
 
-        state.provider_route = self.router.resolve()
+        state.provider_route = self.model_provider.resolve_route()
         state.run = RunSnapshot(status=RunStatus.IN_PROGRESS, phase=RunPhase.INTAKE, providerRoute=state.provider_route)
         state.error = None
 
@@ -287,6 +287,44 @@ class StrategyAdapter(ABC):
             )
             return {"state": state.as_contract(), "approved": payload.get("approved", False)}
 
+        design_polish_applied = False
+        if self._should_attempt_design_polish(state):
+            polished_state = self._attempt_design_polish(state, workspace_snapshot)
+            if polished_state is not None:
+                state = polished_state
+                state.evaluation = self.critic.evaluate(state)
+                design_polish_applied = True
+
+                if self._critic_found_blocking_stub_feedback(state.evaluation.summary, state.evaluation.issues):
+                    state.status = ProjectStatus.ERROR
+                    state.error = (
+                        "评审检测到当前方案里仍有占位或未实现界面。"
+                        "请先生成完整且真实可用的页面，再进入审批。"
+                    )
+                    state.run = RunSnapshot(
+                        status=RunStatus.FAILED,
+                        phase=RunPhase.VERIFY_LOOP,
+                        providerRoute=state.provider_route,
+                        evaluation=state.evaluation,
+                        error=state.error,
+                    )
+                    return {"state": state.as_contract(), "approved": payload.get("approved", False)}
+
+                if state.evaluation.build_readiness_score < 0.25:
+                    state.status = ProjectStatus.ERROR
+                    state.error = state.evaluation.summary
+                    state.run = RunSnapshot(
+                        status=RunStatus.FAILED,
+                        phase=RunPhase.VERIFY_LOOP,
+                        providerRoute=state.provider_route,
+                        evaluation=state.evaluation,
+                        error=state.error,
+                    )
+                    return {"state": state.as_contract(), "approved": payload.get("approved", False)}
+
+        if design_polish_applied and state.evaluation is not None:
+            state.evaluation.design_warnings = self._decorate_design_warnings_after_polish(state.evaluation)
+
         return {"state": state.as_contract(), "approved": payload.get("approved", False)}
 
     def approval_interrupt(self, payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -303,10 +341,7 @@ class StrategyAdapter(ABC):
             return {"state": state.as_contract(), "approved": approved}
 
         state.status = ProjectStatus.AWAITING_APPROVAL
-        state.assistant_summary = (
-            f"{state.app_spec.title} 已准备好进入审批。"
-            "确认后将应用提议的文件改动、执行验证，并启动预览。"
-        )
+        state.assistant_summary = self._build_approval_summary(state)
         append_assistant_message(state, state.assistant_summary)
         return {"state": state.as_contract(), "approved": approved}
 
@@ -397,6 +432,43 @@ class StrategyAdapter(ABC):
         except Exception:
             return None
 
+    def _attempt_design_polish(
+        self,
+        state: AgentSessionState,
+        workspace_snapshot: List[WorkspaceFile],
+    ) -> Optional[AgentSessionState]:
+        if state.app_spec is None or not state.file_operations or state.evaluation is None:
+            return None
+
+        merged_snapshot = self._materialize_workspace_snapshot(workspace_snapshot, state.file_operations)
+        context_snapshot = self.context_builder.select(state, merged_snapshot)
+        polish_brief = "\n".join(
+            [
+                state.evaluation.summary,
+                *(f"- {warning}" for warning in state.evaluation.design_warnings),
+                "请在不改变核心功能路径和数据结构的前提下，提升 Tailwind 主题系统、视觉层级、响应式布局与关键交互反馈。",
+            ]
+        ).strip()
+
+        try:
+            polished_state = self.codegen.repair(
+                state,
+                state.app_spec,
+                context_snapshot,
+                RepairContext(
+                    attempt=1,
+                    category="design_polish",
+                    failedCommand="design quality review",
+                    buildError=polish_brief,
+                ),
+            )
+            full_snapshot = self._materialize_workspace_snapshot(merged_snapshot, polished_state.file_operations)
+            polished_state.file_operations = self._snapshot_to_write_operations(full_snapshot)
+            polished_state.file_change_summary = [operation.summary for operation in polished_state.file_operations]
+            return polished_state
+        except Exception:
+            return None
+
     def _materialize_workspace_snapshot(
         self,
         workspace_snapshot: List[WorkspaceFile],
@@ -453,6 +525,36 @@ class StrategyAdapter(ABC):
             updated = updated[:start] + hunk.replace + updated[start + len(hunk.search) :]
 
         return updated
+
+    @staticmethod
+    def _should_attempt_design_polish(state: AgentSessionState) -> bool:
+        if state.evaluation is None:
+            return False
+        return (
+            state.evaluation.design_quality_score < 0.70
+            or state.evaluation.interaction_quality_score < 0.65
+        )
+
+    @staticmethod
+    def _decorate_design_warnings_after_polish(evaluation) -> List[str]:
+        warnings = list(evaluation.design_warnings)
+        note = "已执行一轮 Tailwind 视觉增强。"
+        if (
+            evaluation.design_quality_score < 0.70
+            or evaluation.interaction_quality_score < 0.65
+        ):
+            note = "已执行一轮 Tailwind 视觉增强，当前结果仍建议人工审阅视觉层级与交互细节。"
+
+        if note not in warnings:
+            warnings.insert(0, note)
+        return warnings
+
+    @staticmethod
+    def _build_approval_summary(state: AgentSessionState) -> str:
+        return (
+            f"{state.app_spec.title} 已准备好进入审批。"
+            "确认后将应用提议的文件改动、执行验证，并启动预览。"
+        )
 
     @staticmethod
     def route_after_clarify(payload: Dict[str, Any]) -> str:

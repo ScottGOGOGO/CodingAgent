@@ -77,7 +77,6 @@ export default function App() {
   const [draft, setDraft] = useState("");
   const scrollRef = useRef<HTMLDivElement | null>(null);
 
-  const mode = project?.reasoningMode ?? "plan_solve";
   const previewUrl = project?.preview.url;
   const readyToConfirm = project?.status === "awaiting_approval";
   const clarificationDecision = project?.session.clarificationDecision;
@@ -141,7 +140,7 @@ export default function App() {
 
     const content = draft.trim();
     setDraft("");
-    void sendMessage(content, mode);
+    void sendMessage(content);
   }
 
   function handleComposerKeyDown(event: React.KeyboardEvent<HTMLTextAreaElement>) {
@@ -205,6 +204,7 @@ export default function App() {
                 <strong>{formatPhaseLabel(latestRun.phase)}</strong>
               </div>
             ) : null}
+
             <textarea
               value={draft}
               onChange={(event) => setDraft(event.target.value)}

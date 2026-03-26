@@ -1,5 +1,5 @@
 class GenerationFailure(RuntimeError):
-    """Raised when the Qwen-backed generation pipeline cannot complete."""
+    """Raised when the model-backed generation pipeline cannot complete."""
 
 
 class ModelProviderError(GenerationFailure):

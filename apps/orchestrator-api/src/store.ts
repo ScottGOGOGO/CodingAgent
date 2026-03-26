@@ -2,12 +2,10 @@ import { Pool } from "pg";
 
 import type {
   ApprovalRequest,
-  ArtifactRecord,
   PreviewInstanceRecord,
   ProjectRecord,
   RunRecord,
   SessionRecord,
-  ToolCallTrace,
   UsageMetrics,
   VersionRecord,
 } from "@vide/contracts";
@@ -26,15 +24,9 @@ export interface ProjectStore {
   saveRun(run: RunRecord): Promise<void>;
   listRuns(projectId: string): Promise<RunRecord[]>;
   saveApproval(approval: ApprovalRequest): Promise<void>;
-  getApproval(runId: string): Promise<ApprovalRequest | null>;
   saveVersion(projectId: string, version: VersionRecord): Promise<void>;
   listVersions(projectId: string): Promise<VersionRecord[]>;
-  saveArtifact(artifact: ArtifactRecord): Promise<void>;
-  listArtifacts(runId: string): Promise<ArtifactRecord[]>;
   savePreviewInstance(instance: PreviewInstanceRecord): Promise<void>;
-  listPreviewInstances(projectId: string): Promise<PreviewInstanceRecord[]>;
-  saveToolCallTrace(trace: ToolCallTrace): Promise<void>;
-  listToolCallTraces(runId: string): Promise<ToolCallTrace[]>;
   saveUsageMetrics(runId: string, usage: UsageMetrics): Promise<void>;
   getUsageMetrics(runId: string): Promise<UsageMetrics | null>;
 }
@@ -49,9 +41,7 @@ export class MemoryProjectStore implements ProjectStore {
   private readonly runs = new Map<string, RunRecord>();
   private readonly approvals = new Map<string, ApprovalRequest>();
   private readonly versions = new Map<string, VersionRecord[]>();
-  private readonly artifacts = new Map<string, ArtifactRecord[]>();
   private readonly previewInstances = new Map<string, PreviewInstanceRecord[]>();
-  private readonly toolCallTraces = new Map<string, ToolCallTrace[]>();
   private readonly usageMetrics = new Map<string, UsageMetrics>();
 
   async createProject(project: ProjectRecord): Promise<void> {
@@ -112,11 +102,6 @@ export class MemoryProjectStore implements ProjectStore {
     this.approvals.set(approval.runId, clone(approval));
   }
 
-  async getApproval(runId: string): Promise<ApprovalRequest | null> {
-    const approval = this.approvals.get(runId);
-    return approval ? clone(approval) : null;
-  }
-
   async saveVersion(projectId: string, version: VersionRecord): Promise<void> {
     const current = this.versions.get(projectId) ?? [];
     const next = current.filter((item) => item.id !== version.id);
@@ -128,34 +113,12 @@ export class MemoryProjectStore implements ProjectStore {
     return (this.versions.get(projectId) ?? []).map((item) => clone(item));
   }
 
-  async saveArtifact(artifact: ArtifactRecord): Promise<void> {
-    const current = this.artifacts.get(artifact.runId) ?? [];
-    this.artifacts.set(artifact.runId, [...current.filter((item) => item.id !== artifact.id), clone(artifact)]);
-  }
-
-  async listArtifacts(runId: string): Promise<ArtifactRecord[]> {
-    return (this.artifacts.get(runId) ?? []).map((item) => clone(item));
-  }
-
   async savePreviewInstance(instance: PreviewInstanceRecord): Promise<void> {
     const current = this.previewInstances.get(instance.projectId) ?? [];
     this.previewInstances.set(
       instance.projectId,
       [...current.filter((item) => item.id !== instance.id), clone(instance)],
     );
-  }
-
-  async listPreviewInstances(projectId: string): Promise<PreviewInstanceRecord[]> {
-    return (this.previewInstances.get(projectId) ?? []).map((item) => clone(item));
-  }
-
-  async saveToolCallTrace(trace: ToolCallTrace): Promise<void> {
-    const current = this.toolCallTraces.get(trace.runId) ?? [];
-    this.toolCallTraces.set(trace.runId, [...current.filter((item) => item.id !== trace.id), clone(trace)]);
-  }
-
-  async listToolCallTraces(runId: string): Promise<ToolCallTrace[]> {
-    return (this.toolCallTraces.get(runId) ?? []).map((item) => clone(item));
   }
 
   async saveUsageMetrics(runId: string, usage: UsageMetrics): Promise<void> {
@@ -205,21 +168,7 @@ export class PostgresProjectStore implements ProjectStore {
         payload JSONB NOT NULL,
         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       );
-      CREATE TABLE IF NOT EXISTS artifacts (
-        id TEXT PRIMARY KEY,
-        project_id TEXT NOT NULL,
-        run_id TEXT NOT NULL,
-        payload JSONB NOT NULL,
-        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-      );
       CREATE TABLE IF NOT EXISTS preview_instances (
-        id TEXT PRIMARY KEY,
-        project_id TEXT NOT NULL,
-        run_id TEXT NOT NULL,
-        payload JSONB NOT NULL,
-        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-      );
-      CREATE TABLE IF NOT EXISTS tool_call_traces (
         id TEXT PRIMARY KEY,
         project_id TEXT NOT NULL,
         run_id TEXT NOT NULL,
@@ -323,10 +272,6 @@ export class PostgresProjectStore implements ProjectStore {
     await this.upsert("approvals", "id", approval.runId, approval.projectId, approval, { run_id: approval.runId });
   }
 
-  async getApproval(runId: string): Promise<ApprovalRequest | null> {
-    return this.readOne<ApprovalRequest>("SELECT payload FROM approvals WHERE run_id = $1", [runId]);
-  }
-
   async saveVersion(projectId: string, version: VersionRecord): Promise<void> {
     await this.upsert("versions", "id", version.id, projectId, version);
   }
@@ -338,34 +283,8 @@ export class PostgresProjectStore implements ProjectStore {
     );
   }
 
-  async saveArtifact(artifact: ArtifactRecord): Promise<void> {
-    await this.upsert("artifacts", "id", artifact.id, artifact.projectId, artifact, { run_id: artifact.runId });
-  }
-
-  async listArtifacts(runId: string): Promise<ArtifactRecord[]> {
-    return this.readMany<ArtifactRecord>("SELECT payload FROM artifacts WHERE run_id = $1 ORDER BY updated_at ASC", [runId]);
-  }
-
   async savePreviewInstance(instance: PreviewInstanceRecord): Promise<void> {
     await this.upsert("preview_instances", "id", instance.id, instance.projectId, instance, { run_id: instance.runId });
-  }
-
-  async listPreviewInstances(projectId: string): Promise<PreviewInstanceRecord[]> {
-    return this.readMany<PreviewInstanceRecord>(
-      "SELECT payload FROM preview_instances WHERE project_id = $1 ORDER BY updated_at DESC",
-      [projectId],
-    );
-  }
-
-  async saveToolCallTrace(trace: ToolCallTrace): Promise<void> {
-    await this.upsert("tool_call_traces", "id", trace.id, "", trace, { run_id: trace.runId });
-  }
-
-  async listToolCallTraces(runId: string): Promise<ToolCallTrace[]> {
-    return this.readMany<ToolCallTrace>(
-      "SELECT payload FROM tool_call_traces WHERE run_id = $1 ORDER BY updated_at ASC",
-      [runId],
-    );
   }
 
   async saveUsageMetrics(runId: string, usage: UsageMetrics): Promise<void> {

@@ -8,10 +8,11 @@ Three-layer MVP for a vibe coding product:
 
 ## Quick start
 
-1. Copy `.env.example` to `.env` and fill in `QWEN_API_KEY` or `DASHSCOPE_API_KEY`.
-2. Install JS dependencies with `npm install`.
-3. Install Python dependencies inside `services/agent-service`.
-4. Start everything with one command:
+1. Copy `.env.example` to `.env` or `.env.local`.
+2. Configure either the generic OpenAI-compatible variables `MODEL_API_KEY`, `MODEL_BASE_URL`, and `MODEL_NAME`, or fill one provider-specific block such as `QWEN_*`, `OPENAI_*`, `GEMINI_*`, or `CLAUDE_*`.
+3. Install JS dependencies with `npm install`.
+4. Install Python dependencies inside `services/agent-service`.
+5. Start everything with one command:
 
 ```bash
 npm run dev:all
@@ -30,7 +31,7 @@ ORCHESTRATOR_PORT=4102
 VITE_API_BASE=http://127.0.0.1:4102
 ```
 
-If your model provider is slow and `/agent/turn` requests time out during generation, increase `AGENT_SERVICE_TIMEOUT_MS` in your env file. The default is `300000` (5 minutes).
+If your model provider is slow and `/agent/turn` requests time out during generation, increase `AGENT_SERVICE_TIMEOUT_MS` in your env file. The default is `420000` (7 minutes).
 
 Or start the agent service, API, and playground separately:
 
@@ -45,4 +46,7 @@ npm run dev:playground
 - The runner prefers Docker when available and falls back to a local process runner when `docker` is not installed.
 - PostgreSQL is supported through `DATABASE_URL`; the API falls back to an in-memory store for local development.
 - The agent uses `Plan-and-Solve` by default and exposes a `ReAct` strategy switch through the same session API.
-- Code generation is Qwen-only. If the Qwen API key is missing or the API request fails, the agent returns a generation failure instead of falling back to a fixed template.
+- The runtime now uses a single OpenAI-compatible adapter powered by `ChatOpenAI`.
+- `MODEL_API_KEY`, `MODEL_BASE_URL`, and `MODEL_NAME` are the highest-priority settings and are the recommended way to switch providers.
+- If `MODEL_*` is empty, the runtime falls back to the provider-specific block selected by `MODEL_PROVIDER`. When `MODEL_PROVIDER=openai_compatible`, it auto-picks the first complete block that has both an API key and a model name.
+- `QWEN_*`, `OPENAI_*`, `GEMINI_*`, and `CLAUDE_*` are env presets only. They work when the target endpoint is OpenAI-compatible. Direct proprietary APIs that are not OpenAI-compatible still need a code adapter.

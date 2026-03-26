@@ -66,6 +66,9 @@ def test_critic_normalizes_object_issues_and_missing_summary(monkeypatch) -> Non
     ]
     assert 0.0 <= result.build_readiness_score <= 1.0
     assert 0.0 <= result.requirement_coverage_score <= 1.0
+    assert 0.0 <= result.design_quality_score <= 1.0
+    assert 0.0 <= result.interaction_quality_score <= 1.0
+    assert result.design_warnings
 
 
 def test_structured_critic_output_accepts_string_scores_and_single_issue() -> None:
@@ -73,12 +76,18 @@ def test_structured_critic_output_accepts_string_scores_and_single_issue() -> No
         {
             "buildReadinessScore": "80%",
             "requirementCoverageScore": "0.65",
+            "designQualityScore": {"value": "72%"},
+            "interactionQualityScore": "0.61",
             "summary": {"text": "基本可执行"},
             "issues": {"severity": "high", "title": "功能覆盖不足"},
+            "designWarnings": {"title": "视觉层级偏弱"},
         }
     )
 
     assert result.build_readiness_score == 0.8
     assert result.requirement_coverage_score == 0.65
+    assert result.design_quality_score == 0.72
+    assert result.interaction_quality_score == 0.61
     assert result.summary == "text: 基本可执行"
     assert result.issues == [{"severity": "high", "title": "功能覆盖不足"}]
+    assert result.design_warnings == [{"title": "视觉层级偏弱"}]

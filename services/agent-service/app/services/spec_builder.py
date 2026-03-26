@@ -6,7 +6,17 @@ from typing import List
 
 from langchain_core.prompts import ChatPromptTemplate
 
-from app.models import AgentSessionState, AppSpec, DataModelNeed, FlowSpec, PlanStep, ScreenSpec, StructuredPlanOutput, StructuredSpecOutput
+from app.models import (
+    AgentSessionState,
+    AppSpec,
+    DataModelNeed,
+    DesignTargets,
+    FlowSpec,
+    PlanStep,
+    ScreenSpec,
+    StructuredPlanOutput,
+    StructuredSpecOutput,
+)
 from app.services.errors import GenerationFailure
 from app.services.model_provider import ModelProvider
 from app.services.structured_output import invoke_structured_json
@@ -16,6 +26,65 @@ USER_FACING_LANGUAGE_RULE = (
     "除非用户明确要求其他语言，所有面向用户的自然语言字段都必须使用简体中文，"
     "保留 JSON key、文件路径和代码标识符的必要格式。"
 )
+
+DESIGN_PROFILES = {
+    "sports": {
+        "visualMood": "高能、进取、带有运动品牌海报感",
+        "layoutEnergy": "首屏要有强冲击力，版面节奏偏纵向叙事并突出关键训练动作",
+        "colorStrategy": "使用高对比主色与大面积深色底，辅以醒目荧光强调训练状态和 CTA",
+        "componentTone": "组件要利落、紧凑，数据卡片和训练模块带一点竞技仪表感",
+        "motionIntensity": "中到偏高，重点强化切换、悬停和关键指标反馈",
+        "interactionFocus": ["训练路径引导", "进度反馈强化", "关键动作卡片的交互聚焦"],
+    },
+    "education": {
+        "visualMood": "专业、启发式、面向成长型用户的学习产品气质",
+        "layoutEnergy": "通过清晰的首屏引导和层次分明的内容区块，降低理解门槛",
+        "colorStrategy": "主色偏理性蓝绿系，辅以明亮高光色强调学习进度和重点模块",
+        "componentTone": "组件应兼顾可信度与亲和力，卡片和面板有明显层次但不过度装饰",
+        "motionIntensity": "低到中，重点用于反馈、状态切换和内容揭示",
+        "interactionFocus": ["学习主路径引导", "阶段进度反馈", "课程与练习模块的聚焦切换"],
+    },
+    "community": {
+        "visualMood": "开放、热闹、具有人际互动氛围的内容社区感",
+        "layoutEnergy": "采用高密度但有呼吸感的信息流布局，并突出互动区与创作入口",
+        "colorStrategy": "在中性色底上加入鲜明品牌色点缀，保证内容层级和互动提示足够清晰",
+        "componentTone": "组件更偏内容卡片和互动模块，强调头像、标签和状态反馈",
+        "motionIntensity": "中等，重点用于内容切换、评论互动和悬停反馈",
+        "interactionFocus": ["内容流浏览节奏", "创作与发布入口", "评论点赞等互动反馈"],
+    },
+    "commerce": {
+        "visualMood": "精致、可信、兼顾转化效率的品牌化零售气质",
+        "layoutEnergy": "采用强视觉橱窗和清晰的转化路径，重要 CTA 必须显眼",
+        "colorStrategy": "以克制的中性色为底，搭配一到两个高识别品牌色塑造商品聚焦区",
+        "componentTone": "组件更偏商品陈列、筛选和购买辅助，细节需有高级感",
+        "motionIntensity": "低到中，重点用于商品切换、悬停和购买反馈",
+        "interactionFocus": ["首屏商品聚焦", "筛选与比较反馈", "转化路径的连续引导"],
+    },
+    "travel": {
+        "visualMood": "沉浸、编辑感、具备目的地氛围和故事性的旅行杂志风",
+        "layoutEnergy": "强调首屏场景感和内容层层展开的阅读节奏",
+        "colorStrategy": "用有氛围感的渐变和图片底色，搭配干净文字层级和局部高亮",
+        "componentTone": "组件偏编辑式信息卡和时间线，整体更轻盈有呼吸感",
+        "motionIntensity": "低到中，突出滚动节奏和卡片浮层反馈",
+        "interactionFocus": ["首屏目的地氛围", "行程节奏展示", "内容卡片与地图信息切换"],
+    },
+    "productivity": {
+        "visualMood": "克制、精密、具备现代 SaaS 质感的专业产品风格",
+        "layoutEnergy": "强调信息分区、工具效率和主任务聚焦，避免页面松散",
+        "colorStrategy": "以中性深浅层次为主，配合少量品牌强调色提升专业感",
+        "componentTone": "组件偏面板、表格、数据卡和操作条，要求整齐且有细节",
+        "motionIntensity": "低到中，重点用于状态过渡和数据反馈",
+        "interactionFocus": ["主任务流聚焦", "数据反馈清晰化", "复杂操作的渐进式引导"],
+    },
+    "generic": {
+        "visualMood": "现代、清晰、具备品牌识别度的产品设计气质",
+        "layoutEnergy": "通过强首屏与分层 section 建立清晰的阅读和操作路径",
+        "colorStrategy": "建立明确主题色、背景层次和强调色，避免单一白底卡片堆叠",
+        "componentTone": "组件需要统一、有层次，并在细节上体现成体系的视觉语言",
+        "motionIntensity": "中等，重点用于首屏进入、区块切换和悬停反馈",
+        "interactionFocus": ["首屏主任务引导", "核心内容层级组织", "CTA 与状态反馈增强"],
+    },
+}
 
 
 def slugify(value: str, fallback: str = "generated-app") -> str:
@@ -89,6 +158,31 @@ class SpecBuilder:
                 result.brand_and_visual_direction,
                 working_spec.brand_and_visual_direction,
                 "简洁现代、可直接落地的界面风格方向。",
+            ),
+            designTargets=self._derive_design_targets(
+                title=self._coalesce_text(result.title, working_spec.title, working_spec.goal, "生成的应用"),
+                summary=self._coalesce_text(
+                    result.summary,
+                    working_spec.summary,
+                    result.goal,
+                    working_spec.goal,
+                    "根据最新对话整理出的可实施 Web 应用方案。",
+                ),
+                goal=self._coalesce_text(
+                    result.goal,
+                    working_spec.goal,
+                    working_spec.summary,
+                    state.messages[-1].content if state.messages else None,
+                    "构建一个符合用户需求、可直接实现的 Web 应用。",
+                ),
+                target_users=self._normalize_string_list(result.target_users or working_spec.target_users),
+                screens=self._normalize_screens(result.screens),
+                flows=self._normalize_flows(result.core_flows),
+                brand_and_visual_direction=self._coalesce_text(
+                    result.brand_and_visual_direction,
+                    working_spec.brand_and_visual_direction,
+                    "简洁现代、可直接落地的界面风格方向。",
+                ),
             ),
             constraints=self._normalize_string_list(result.constraints),
             successCriteria=self._normalize_string_list(result.success_criteria),
@@ -247,3 +341,99 @@ class SpecBuilder:
                 )
             )
         return normalized
+
+    def _derive_design_targets(
+        self,
+        title: str,
+        summary: str,
+        goal: str,
+        target_users: List[str],
+        screens: List[ScreenSpec],
+        flows: List[FlowSpec],
+        brand_and_visual_direction: str,
+    ) -> DesignTargets:
+        fingerprint = " ".join(
+            [
+                title,
+                summary,
+                goal,
+                brand_and_visual_direction,
+                " ".join(target_users),
+                " ".join(screen.name for screen in screens),
+                " ".join(flow.name for flow in flows),
+            ]
+        ).lower()
+
+        profile = DESIGN_PROFILES[self._match_design_profile(fingerprint)]
+        audience_hint = self._derive_audience_hint(fingerprint, target_users)
+        motion_intensity = profile["motionIntensity"]
+        if audience_hint and "年轻" in audience_hint and motion_intensity == "低到中":
+            motion_intensity = "中等，重点在关键区域加入更鲜明的入场与反馈动效"
+
+        component_tone = profile["componentTone"]
+        if audience_hint:
+            component_tone = f"{component_tone}，并照顾{audience_hint}的理解与操作节奏"
+
+        interaction_focus = profile["interactionFocus"] + self._derive_interaction_focus(screens, flows, fingerprint)
+        deduped_focus = list(dict.fromkeys([item for item in interaction_focus if item]))
+
+        visual_mood = profile["visualMood"]
+        if brand_and_visual_direction:
+            visual_mood = f"{brand_and_visual_direction}，整体气质保持{profile['visualMood']}"
+
+        layout_energy = profile["layoutEnergy"]
+        if len(screens) >= 4 or len(flows) >= 3:
+            layout_energy = f"{layout_energy}，同时确保复杂信息在桌面端和移动端都能分层展开。"
+
+        return DesignTargets(
+            visualMood=visual_mood,
+            layoutEnergy=layout_energy,
+            colorStrategy=profile["colorStrategy"],
+            componentTone=component_tone,
+            motionIntensity=motion_intensity,
+            interactionFocus=deduped_focus[:4] or profile["interactionFocus"],
+        )
+
+    @staticmethod
+    def _match_design_profile(fingerprint: str) -> str:
+        keyword_map = [
+            ("sports", ("网球", "篮球", "足球", "羽毛球", "健身", "运动", "训练", "workout", "training", "coach")),
+            ("education", ("学习", "教育", "课程", "教学", "练习", "lesson", "study", "learning", "academy")),
+            ("community", ("社区", "社交", "论坛", "聊天", "动态", "community", "social", "forum", "feed")),
+            ("commerce", ("商城", "电商", "商品", "购物", "下单", "shop", "store", "commerce", "checkout")),
+            ("travel", ("旅行", "旅游", "行程", "景点", "trip", "travel", "itinerary", "hotel")),
+            ("productivity", ("任务", "项目", "效率", "协作", "dashboard", "workspace", "project", "crm", "管理")),
+        ]
+        for profile, keywords in keyword_map:
+            if any(keyword in fingerprint for keyword in keywords):
+                return profile
+        return "generic"
+
+    @staticmethod
+    def _derive_audience_hint(fingerprint: str, target_users: List[str]) -> str:
+        audience_text = " ".join(target_users).lower() or fingerprint
+        if any(keyword in audience_text for keyword in ("18岁", "大学生", "学生", "年轻", "青年", "teen", "beginner")):
+            return "年轻和初学者用户"
+        if any(keyword in audience_text for keyword in ("团队", "企业", "运营", "销售", "professional")):
+            return "专业场景用户"
+        return ""
+
+    @staticmethod
+    def _derive_interaction_focus(screens: List[ScreenSpec], flows: List[FlowSpec], fingerprint: str) -> List[str]:
+        focus: List[str] = []
+        screen_names = " ".join(screen.name for screen in screens)
+        flow_names = " ".join(flow.name for flow in flows)
+        combined = f"{fingerprint} {screen_names} {flow_names}"
+
+        if any(keyword in combined for keyword in ("注册", "onboard", "登录", "开始", "setup")):
+            focus.append("引导式 onboarding 与首个关键动作的即时反馈")
+        if any(keyword in combined for keyword in ("进度", "仪表盘", "dashboard", "跟踪", "数据")):
+            focus.append("数据卡片、进度条和关键指标的层级强化")
+        if any(keyword in combined for keyword in ("社区", "动态", "评论", "交流", "feed")):
+            focus.append("社区卡片、评论互动和悬停状态反馈")
+        if any(keyword in combined for keyword in ("视频", "课程", "训练", "lesson", "drill")):
+            focus.append("内容切换、训练卡片和媒体区域的强主次关系")
+        if len(flows) >= 2:
+            focus.append("多步骤流程中的当前状态、下一步和完成反馈")
+
+        return focus

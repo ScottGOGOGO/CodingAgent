@@ -240,6 +240,49 @@ def test_build_spec_accepts_string_shaped_screens_and_flows(monkeypatch) -> None
     assert spec.constraints == ["移动端优先"]
     assert spec.success_criteria == ["完成首个训练任务"]
     assert spec.assumptions == ["用户具备联网能力"]
+    assert spec.design_targets.visual_mood
+    assert spec.design_targets.layout_energy
+    assert spec.design_targets.interaction_focus
+
+
+def test_build_spec_derives_design_targets_for_sports_learning_apps(monkeypatch) -> None:
+    builder = SpecBuilder()
+    state = AgentSessionState(
+        sessionId="session-2",
+        projectId="project-2",
+        reasoningMode=ReasoningMode.PLAN_SOLVE,
+        workingSpec={
+            "title": "网球训练助手",
+            "summary": "帮助 18 岁零基础用户建立训练节奏。",
+            "goal": "为网球初学者提供训练计划、视频学习和进度反馈。",
+            "targetUsers": ["18岁零基础用户"],
+            "brandAndVisualDirection": "清爽但有冲击力的运动品牌风",
+        },
+    )
+
+    def fake_invoke_structured(**kwargs):
+        return StructuredSpecOutput(
+            title="网球训练助手",
+            summary="帮助新手建立训练节奏。",
+            goal="帮助用户学习基础动作、跟踪训练进度并完成每日练习。",
+            targetUsers=["18岁零基础用户"],
+            screens=["首页", "训练计划", "进度仪表盘", "社区交流"],
+            coreFlows=["开始训练", "记录完成情况"],
+            dataModelNeeds=[],
+            integrations=[],
+            brandAndVisualDirection="清爽但有冲击力的运动品牌风",
+            constraints=[],
+            successCriteria=[],
+            assumptions=[],
+        )
+
+    monkeypatch.setattr(builder, "_invoke_structured", fake_invoke_structured)
+
+    spec = builder.build_spec(state)
+
+    assert "运动品牌" in spec.design_targets.visual_mood
+    assert "训练" in "".join(spec.design_targets.interaction_focus)
+    assert spec.design_targets.motion_intensity
 
 
 def test_structured_plan_output_accepts_object_shaped_steps() -> None:
