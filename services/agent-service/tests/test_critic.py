@@ -1,4 +1,5 @@
 from app.models import AgentSessionState, ReasoningMode, StructuredCriticOutput
+from app.services.errors import GenerationFailure
 from app.services.critic import CriticService
 
 
@@ -91,3 +92,28 @@ def test_structured_critic_output_accepts_string_scores_and_single_issue() -> No
     assert result.summary == "text: 基本可执行"
     assert result.issues == [{"severity": "high", "title": "功能覆盖不足"}]
     assert result.design_warnings == [{"title": "视觉层级偏弱"}]
+
+
+def test_critic_falls_back_to_heuristics_when_model_returns_empty_response(monkeypatch) -> None:
+    critic = CriticService()
+    state = make_state()
+
+    monkeypatch.setattr(
+        critic.provider,
+        "require_chat_model",
+        lambda role: type(
+            "FakeModel",
+            (),
+            {
+                "with_structured_output": lambda self, schema, method=None: type(
+                    "Invoker", (), {"invoke": lambda self, messages: (_ for _ in ()).throw(GenerationFailure("模型返回了空响应，未提供 JSON 结果。"))}
+                )()
+            },
+        )(),
+    )
+
+    result = critic.evaluate(state)
+
+    assert result.issues
+    assert any("[critical]" in issue.lower() or "[high]" in issue.lower() for issue in result.issues)
+    assert 0.0 <= result.build_readiness_score <= 1.0

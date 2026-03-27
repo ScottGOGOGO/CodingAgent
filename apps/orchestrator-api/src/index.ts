@@ -27,7 +27,7 @@ const store = await createProjectStore(config.databaseUrl);
 
 const pipeline = new ExecutionPipeline(runner, workspace, agentClient, store, bus);
 const worker = new ExecutionWorker(store, bus, pipeline);
-const proposalValidator = new ProposalValidator(runner, workspace, agentClient);
+const proposalValidator = new ProposalValidator(workspace);
 const runService = new RunService(store, bus, workspace, agentClient, worker, proposalValidator);
 const projectService = new ProjectService(config, store, bus, workspace, runService);
 

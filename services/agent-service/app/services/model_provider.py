@@ -47,6 +47,8 @@ class ModelProvider:
             api_key=settings.resolved_api_key,
             base_url=settings.resolved_base_url,
             temperature=settings.model_temperature,
+            timeout=settings.model_timeout_seconds,
+            max_retries=settings.model_max_retries,
         )
 
     def require_chat_model(self, role: ModelRole) -> BaseChatModel:

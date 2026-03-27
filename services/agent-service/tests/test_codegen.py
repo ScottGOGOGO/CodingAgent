@@ -1,5 +1,22 @@
-from app.models import StructuredFileOperationOutput, StructuredGeneratedCodeOutput, WorkspaceFile
+from app.models import (
+    AgentSessionState,
+    AppSpec,
+    ChatMessage,
+    ChatRole,
+    DataModelNeed,
+    DesignTargets,
+    FileOperation,
+    FlowSpec,
+    GeneratedCodeOutput,
+    ProjectStatus,
+    ReasoningMode,
+    ScreenSpec,
+    StructuredFileOperationOutput,
+    StructuredGeneratedCodeOutput,
+    WorkspaceFile,
+)
 from app.services.codegen import CodeGenerationService
+from app.services.errors import GenerationFailure
 
 
 def test_codegen_normalizes_patch_alias_and_run_dependency_command() -> None:
@@ -321,6 +338,58 @@ def test_codegen_falls_back_to_raw_json_when_structured_output_normalizes_to_noo
     assert normalized.operations[0].hunks[0].replace == "export default function Home() { return <div>Fixed</div>; }\n"
 
 
+def test_codegen_retries_after_empty_raw_json_response() -> None:
+    service = CodeGenerationService()
+    context_snapshot = [
+        WorkspaceFile(
+            path="src/pages/Home.tsx",
+            content="export default function Home() { return <div>Old</div>; }\n",
+        ),
+    ]
+
+    class FakeStructuredInvoker:
+        def invoke(self, messages: object) -> StructuredGeneratedCodeOutput:
+            return StructuredGeneratedCodeOutput.model_validate(
+                {
+                    "assistantSummary": "结构化输出丢失了关键信息。",
+                    "operations": [
+                        {
+                            "type": "patch",
+                            "path": "src/pages/Home.tsx",
+                        }
+                    ],
+                }
+            )
+
+    class FakeModel:
+        def __init__(self) -> None:
+            self.raw_calls = 0
+
+        def with_structured_output(self, schema: object, method: str = "json_mode") -> FakeStructuredInvoker:
+            return FakeStructuredInvoker()
+
+        def invoke(self, messages: object) -> object:
+            self.raw_calls += 1
+            if self.raw_calls == 1:
+                return type("FakeResponse", (), {"content": ""})()
+            return type(
+                "FakeResponse",
+                (),
+                {
+                    "content": (
+                        '{"assistantSummary":"空响应后恢复。","operations":'
+                        '[{"op":"patch","path":"src/pages/Home.tsx","before":"export default function Home() { return <div>Old</div>; }\\n","after":"export default function Home() { return <div>Fixed</div>; }\\n"}]}'
+                    )
+                },
+            )()
+
+    normalized = service._invoke_and_normalize(FakeModel(), messages=[], context_snapshot=context_snapshot)
+
+    assert normalized.assistant_summary == "空响应后恢复。"
+    assert normalized.operations[0].type == "patch"
+    assert normalized.operations[0].hunks[0].replace == "export default function Home() { return <div>Fixed</div>; }\n"
+
+
 def test_codegen_uses_replace_as_fallback_for_full_file_before_after_patch() -> None:
     service = CodeGenerationService()
     existing = (
@@ -370,3 +439,179 @@ def test_codegen_uses_replace_as_fallback_for_full_file_before_after_patch() -> 
     assert normalized.operations[0].hunks[0].search == before
     assert normalized.operations[0].hunks[0].replace == after
     assert normalized.operations[0].fallback_content == after
+
+
+def test_codegen_falls_back_to_local_scaffold_on_transport_failure_for_fresh_app(monkeypatch) -> None:
+    service = CodeGenerationService()
+    state = AgentSessionState(
+        sessionId="session-1",
+        projectId="project-1",
+        reasoningMode=ReasoningMode.PLAN_SOLVE,
+        status=ProjectStatus.PLANNING,
+        messages=[
+            ChatMessage(
+                id="m1",
+                role=ChatRole.USER,
+                content="帮我生成一个最简单的待办清单 web 应用",
+                createdAt="2026-03-26T00:00:00Z",
+            )
+        ],
+    )
+    spec = AppSpec(
+        appName="todo-lite",
+        title="待办清单",
+        summary="一个最简单的待办清单 Web 应用",
+        goal="让用户添加、勾选和删除待办事项",
+        targetUsers=["个人用户"],
+        screens=[ScreenSpec(id="home", name="首页", purpose="管理待办事项", elements=["输入框", "列表", "筛选"])],
+        coreFlows=[FlowSpec(id="todo-flow", name="待办管理", steps=["添加待办", "完成待办"], success="用户可以顺利管理任务")],
+        dataModelNeeds=[
+            DataModelNeed(entity="Todo", fields=["id (string)", "title (string)", "completed (boolean)"], notes="使用本地状态"),
+        ],
+        integrations=[],
+        brandAndVisualDirection="简洁现代",
+        designTargets=DesignTargets(
+            visualMood="简洁现代",
+            layoutEnergy="聚焦单任务",
+            colorStrategy="清爽蓝白",
+            componentTone="轻量卡片",
+            motionIntensity="低",
+            interactionFocus=["任务输入", "状态反馈"],
+        ),
+        constraints=["使用 React + Vite TypeScript"],
+        successCriteria=["可以添加、勾选和删除待办"],
+        assumptions=["使用本地状态管理"],
+    )
+
+    def fail_invoke(*args, **kwargs):
+        raise GenerationFailure("结构化输出失败：Connection error.")
+
+    monkeypatch.setattr(service.provider, "require_chat_model", lambda role: object())
+    monkeypatch.setattr(service, "_invoke_and_normalize", fail_invoke)
+
+    generated = service._invoke_generation(state, spec, [])
+
+    paths = {operation.path for operation in generated.operations}
+    assert "package.json" in paths
+    assert "src/App.tsx" in paths
+    assert "src/index.css" in paths
+    assert generated.assistant_summary == "已基于当前规格生成可运行的首版应用骨架与完整界面。"
+
+
+def test_codegen_falls_back_to_local_scaffold_on_structured_output_exhaustion_for_fresh_app(monkeypatch) -> None:
+    service = CodeGenerationService()
+    state = AgentSessionState(
+        sessionId="session-1",
+        projectId="project-1",
+        reasoningMode=ReasoningMode.PLAN_SOLVE,
+        status=ProjectStatus.PLANNING,
+        messages=[
+            ChatMessage(
+                id="m1",
+                role=ChatRole.USER,
+                content="帮我生成一个最简单的待办清单 web 应用",
+                createdAt="2026-03-26T00:00:00Z",
+            )
+        ],
+    )
+    spec = AppSpec(
+        appName="todo-lite",
+        title="待办清单",
+        summary="一个最简单的待办清单 Web 应用",
+        goal="让用户添加、勾选和删除待办事项",
+        targetUsers=["个人用户"],
+        screens=[ScreenSpec(id="home", name="首页", purpose="管理待办事项", elements=["输入框", "列表", "筛选"])],
+        coreFlows=[FlowSpec(id="todo-flow", name="待办管理", steps=["添加待办", "完成待办"], success="用户可以顺利管理任务")],
+        dataModelNeeds=[
+            DataModelNeed(entity="Todo", fields=["id (string)", "title (string)", "completed (boolean)"], notes="使用本地状态"),
+        ],
+        integrations=[],
+        brandAndVisualDirection="简洁现代",
+        designTargets=DesignTargets(
+            visualMood="简洁现代",
+            layoutEnergy="聚焦单任务",
+            colorStrategy="清爽蓝白",
+            componentTone="轻量卡片",
+            motionIntensity="低",
+            interactionFocus=["任务输入", "状态反馈"],
+        ),
+        constraints=["使用 React + Vite TypeScript"],
+        successCriteria=["可以添加、勾选和删除待办"],
+        assumptions=["使用本地状态管理"],
+    )
+
+    def fail_invoke(*args, **kwargs):
+        raise GenerationFailure("结构化输出失败：模型返回了空响应，未提供 JSON 结果。")
+
+    monkeypatch.setattr(service.provider, "require_chat_model", lambda role: object())
+    monkeypatch.setattr(service, "_invoke_and_normalize", fail_invoke)
+
+    generated = service._invoke_generation(state, spec, [])
+
+    paths = {operation.path for operation in generated.operations}
+    assert "package.json" in paths
+    assert "src/App.tsx" in paths
+
+
+def test_codegen_preserves_model_output_for_fresh_app_when_transport_succeeds(monkeypatch) -> None:
+    service = CodeGenerationService()
+    state = AgentSessionState(
+        sessionId="session-2",
+        projectId="project-2",
+        reasoningMode=ReasoningMode.PLAN_SOLVE,
+        status=ProjectStatus.PLANNING,
+        messages=[
+            ChatMessage(
+                id="m1",
+                role=ChatRole.USER,
+                content="帮我生成一个最简单的待办清单 web 应用",
+                createdAt="2026-03-26T00:00:00Z",
+            )
+        ],
+    )
+    spec = AppSpec(
+        appName="todo-lite",
+        title="待办清单",
+        summary="一个最简单的待办清单 Web 应用",
+        goal="让用户添加、勾选和删除待办事项",
+        targetUsers=["个人用户"],
+        screens=[ScreenSpec(id="home", name="首页", purpose="管理待办事项", elements=["输入框", "列表", "筛选"])],
+        coreFlows=[FlowSpec(id="todo-flow", name="待办管理", steps=["添加待办", "完成待办"], success="用户可以顺利管理任务")],
+        dataModelNeeds=[
+            DataModelNeed(entity="Todo", fields=["id (string)", "title (string)", "completed (boolean)"], notes="使用本地状态"),
+        ],
+        integrations=[],
+        brandAndVisualDirection="简洁现代",
+        designTargets=DesignTargets(
+            visualMood="简洁现代",
+            layoutEnergy="聚焦单任务",
+            colorStrategy="清爽蓝白",
+            componentTone="轻量卡片",
+            motionIntensity="低",
+            interactionFocus=["任务输入", "状态反馈"],
+        ),
+        constraints=["使用 React + Vite TypeScript"],
+        successCriteria=["可以添加、勾选和删除待办"],
+        assumptions=["使用本地状态管理"],
+    )
+
+    def fake_generation(*args, **kwargs):
+        return GeneratedCodeOutput(
+            assistantSummary="只返回了一个不完整的占位页面。",
+            operations=[
+                FileOperation(
+                    type="write",
+                    path="src/App.tsx",
+                    summary="写入占位页面。",
+                    content="export default function App() { return <div>待实现</div>; }\n",
+                )
+            ],
+        )
+
+    monkeypatch.setattr(service, "_invoke_generation", fake_generation)
+
+    next_state = service.generate(state, spec, [])
+
+    assert [operation.path for operation in next_state.file_operations] == ["src/App.tsx"]
+    assert next_state.file_operations[0].content == "export default function App() { return <div>待实现</div>; }\n"
+    assert next_state.assistant_summary == "只返回了一个不完整的占位页面。"

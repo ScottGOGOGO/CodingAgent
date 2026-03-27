@@ -2,13 +2,46 @@ from app.models import AgentSessionState, EvaluationResult, FileOperation, Proje
 from app.strategies.plan_solve import PlanSolveStrategy
 
 
+def make_complete_state(**overrides) -> AgentSessionState:
+    base = {
+        "sessionId": "session-1",
+        "projectId": "project-1",
+        "reasoningMode": ReasoningMode.PLAN_SOLVE,
+        "status": ProjectStatus.PLANNING,
+        "fileOperations": [
+            {
+                "type": "write",
+                "path": "package.json",
+                "summary": "Write package",
+                "content": "{\"name\":\"demo\",\"dependencies\":{\"react\":\"^18.3.1\",\"react-dom\":\"^18.3.1\"},\"devDependencies\":{\"vite\":\"^5.4.5\"}}\n",
+            },
+            {
+                "type": "write",
+                "path": "index.html",
+                "summary": "Write html",
+                "content": "<!doctype html><html><body><div id='root'></div></body></html>\n",
+            },
+            {
+                "type": "write",
+                "path": "src/main.tsx",
+                "summary": "Write main entry",
+                "content": "import ReactDOM from 'react-dom/client';\nimport App from './App';\nReactDOM.createRoot(document.getElementById('root')!).render(<App />);\n",
+            },
+            {
+                "type": "write",
+                "path": "src/App.tsx",
+                "summary": "Write app shell",
+                "content": "export default function App() {\n  return <main>Ready</main>;\n}\n",
+            },
+        ],
+    }
+    base.update(overrides)
+    return AgentSessionState(**base)
+
+
 def test_verify_loop_rejects_placeholder_app_content() -> None:
     strategy = PlanSolveStrategy()
-    state = AgentSessionState(
-        sessionId="session-1",
-        projectId="project-1",
-        reasoningMode=ReasoningMode.PLAN_SOLVE,
-        status=ProjectStatus.PLANNING,
+    state = make_complete_state(
         fileOperations=[
             {
                 "type": "write",
@@ -16,7 +49,7 @@ def test_verify_loop_rejects_placeholder_app_content() -> None:
                 "summary": "Render route shell",
                 "content": "const Home = () => <div>行程概览页（待实现）</div>;\nexport default Home;\n",
             }
-        ],
+        ]
     )
 
     result = strategy.verify_loop(
@@ -42,12 +75,26 @@ def test_verify_loop_rejects_placeholder_app_content() -> None:
 
 def test_verify_loop_rejects_missing_local_import_targets() -> None:
     strategy = PlanSolveStrategy()
-    state = AgentSessionState(
-        sessionId="session-1",
-        projectId="project-1",
-        reasoningMode=ReasoningMode.PLAN_SOLVE,
-        status=ProjectStatus.PLANNING,
+    state = make_complete_state(
         fileOperations=[
+            {
+                "type": "write",
+                "path": "package.json",
+                "summary": "Write package",
+                "content": "{\"name\":\"demo\"}\n",
+            },
+            {
+                "type": "write",
+                "path": "index.html",
+                "summary": "Write html",
+                "content": "<!doctype html><html><body><div id='root'></div></body></html>\n",
+            },
+            {
+                "type": "write",
+                "path": "src/main.tsx",
+                "summary": "Write main entry",
+                "content": "import App from './App';\n",
+            },
             {
                 "type": "write",
                 "path": "src/App.tsx",
@@ -58,18 +105,14 @@ def test_verify_loop_rejects_missing_local_import_targets() -> None:
                     "  return <Home />;\n"
                     "}\n"
                 ),
-            }
-        ],
+            },
+        ]
     )
 
     result = strategy.verify_loop(
         {
             "state": state.as_contract(),
-            "workspace_snapshot": [
-                {"path": "package.json", "content": "{}"},
-                {"path": "index.html", "content": "<!doctype html>"},
-                {"path": "src/main.tsx", "content": "import './App';"},
-            ],
+            "workspace_snapshot": [],
             "approved": False,
         }
     )
@@ -82,117 +125,35 @@ def test_verify_loop_rejects_missing_local_import_targets() -> None:
     assert "src/App.tsx -> ./components/Home" in next_state.error
 
 
-def test_verify_loop_ignores_normal_input_placeholder_props() -> None:
+def test_verify_loop_blocks_low_build_readiness_scores(monkeypatch) -> None:
     strategy = PlanSolveStrategy()
-    state = AgentSessionState(
-        sessionId="session-1",
-        projectId="project-1",
-        reasoningMode=ReasoningMode.PLAN_SOLVE,
-        status=ProjectStatus.PLANNING,
-        fileOperations=[
-            {
-                "type": "write",
-                "path": "src/App.tsx",
-                "summary": "Render app shell",
-                "content": (
-                    "export default function App() {\n"
-                    "  return <input placeholder=\"Type your goal\" />;\n"
-                    "}\n"
-                ),
-            }
-        ],
+    state = make_complete_state()
+
+    monkeypatch.setattr(
+        strategy.critic,
+        "evaluate",
+        lambda current_state: EvaluationResult(
+            buildReadinessScore=0.2,
+            requirementCoverageScore=0.8,
+            summary="构建稳定性不足，暂不建议进入审批。",
+            issues=["[high] Build readiness is too low."],
+        ),
     )
 
-    assert strategy._find_placeholder_paths(state.file_operations) == []
-
-
-def test_verify_loop_ignores_placeholder_text_inside_code_comments() -> None:
-    strategy = PlanSolveStrategy()
-    state = AgentSessionState(
-        sessionId="session-1",
-        projectId="project-1",
-        reasoningMode=ReasoningMode.PLAN_SOLVE,
-        status=ProjectStatus.PLANNING,
-        fileOperations=[
-            {
-                "type": "write",
-                "path": "src/pages/Lesson.tsx",
-                "summary": "Render lesson page",
-                "content": (
-                    "export default function Lesson() {\n"
-                    "  /* Video Placeholder */\n"
-                    "  return <img alt='Demo' src='https://placehold.co/600x340' />;\n"
-                    "}\n"
-                ),
-            }
-        ],
+    result = strategy.verify_loop(
+        {
+            "state": state.as_contract(),
+            "workspace_snapshot": [],
+            "approved": False,
+        }
     )
 
-    assert strategy._find_placeholder_paths(state.file_operations) == []
+    next_state = AgentSessionState.model_validate(result["state"])
 
-
-def test_critic_stub_feedback_ignores_warning_level_placeholder_data_notes() -> None:
-    assert not PlanSolveStrategy._critic_found_blocking_stub_feedback(
-        "The code is highly build-ready and nearly complete.",
-        [
-            "[warning] Step 2 is not implemented yet — only placeholder week1Plan is used for the demo.",
-            "[info] Some sample drill data is still hardcoded for maintainability reasons.",
-        ],
-    )
-
-
-def test_critic_stub_feedback_blocks_critical_placeholder_ui_findings() -> None:
-    assert PlanSolveStrategy._critic_found_blocking_stub_feedback(
-        "The app still contains route-only skeleton screens.",
-        [
-            "[critical] Placeholder UI remains in src/App.tsx with 待实现 labels.",
-        ],
-    )
-
-
-def test_find_placeholder_paths_blocks_user_facing_video_placeholder_copy() -> None:
-    strategy = PlanSolveStrategy()
-    state = AgentSessionState(
-        sessionId="session-1",
-        projectId="project-1",
-        reasoningMode=ReasoningMode.PLAN_SOLVE,
-        status=ProjectStatus.PLANNING,
-        fileOperations=[
-            {
-                "type": "write",
-                "path": "src/pages/DrillDetail.tsx",
-                "summary": "Render drill detail",
-                "content": "export default function DrillDetail() { return <p>Video placeholder - in production, this would be a real drill video.</p>; }",
-            }
-        ],
-    )
-
-    assert strategy._find_placeholder_paths(state.file_operations) == ["src/pages/DrillDetail.tsx"]
-
-
-def test_find_placeholder_paths_ignores_patch_search_when_replacement_removes_placeholder() -> None:
-    strategy = PlanSolveStrategy()
-    state = AgentSessionState(
-        sessionId="session-1",
-        projectId="project-1",
-        reasoningMode=ReasoningMode.PLAN_SOLVE,
-        status=ProjectStatus.PLANNING,
-        fileOperations=[
-            {
-                "type": "patch",
-                "path": "src/App.tsx",
-                "summary": "Replace placeholder copy",
-                "hunks": [
-                    {
-                        "search": "[Video placeholder: Serve demo]",
-                        "replace": "Video lesson focus: Serve demo",
-                    }
-                ],
-            }
-        ],
-    )
-
-    assert strategy._find_placeholder_paths(state.file_operations) == []
+    assert next_state.status == ProjectStatus.ERROR
+    assert next_state.error == "构建稳定性不足，暂不建议进入审批。"
+    assert next_state.run is not None
+    assert next_state.run.status == RunStatus.FAILED
 
 
 def test_verify_loop_attempts_preflight_repair_for_incomplete_fresh_app(monkeypatch) -> None:
@@ -276,7 +237,7 @@ def test_verify_loop_attempts_preflight_repair_for_incomplete_fresh_app(monkeypa
     monkeypatch.setattr(
         strategy.critic,
         "evaluate",
-        lambda state: EvaluationResult(
+        lambda current_state: EvaluationResult(
             buildReadinessScore=0.9,
             requirementCoverageScore=0.8,
             summary="评审通过。",
@@ -306,7 +267,7 @@ def test_verify_loop_attempts_preflight_repair_for_incomplete_fresh_app(monkeypa
     }
 
 
-def test_verify_loop_runs_single_design_polish_pass_when_design_scores_are_low(monkeypatch) -> None:
+def test_verify_loop_does_not_run_design_polish_by_default(monkeypatch) -> None:
     strategy = PlanSolveStrategy()
     state = AgentSessionState(
         sessionId="session-design",
@@ -336,31 +297,7 @@ def test_verify_loop_runs_single_design_polish_pass_when_design_scores_are_low(m
             "successCriteria": [],
             "assumptions": [],
         },
-        fileOperations=[
-            {
-                "type": "write",
-                "path": "package.json",
-                "summary": "Write package",
-                "content": "{\"name\":\"tennis-coach\",\"dependencies\":{\"react\":\"^18.3.1\",\"react-dom\":\"^18.3.1\"},\"devDependencies\":{\"vite\":\"^5.4.5\"}}\n",
-            },
-            {
-                "type": "write",
-                "path": "index.html",
-                "summary": "Write html",
-                "content": "<!doctype html><html><body><div id='root'></div></body></html>\n",
-            },
-            {
-                "type": "write",
-                "path": "src/main.tsx",
-                "summary": "Write main entry",
-                "content": "import ReactDOM from 'react-dom/client';\nimport App from './App';\nReactDOM.createRoot(document.getElementById('root')!).render(<App />);\n",
-            },
-            {
-                "type": "write",
-                "path": "src/App.tsx",
-                "summary": "Write generic app",
-                "content": "export default function App() {\n  return <main><header>网球训练助手</header><section className='card'>训练计划</section></main>;\n}\n",
-            },
+        fileOperations=make_complete_state().file_operations + [
             {
                 "type": "write",
                 "path": "src/App.css",
@@ -370,35 +307,24 @@ def test_verify_loop_runs_single_design_polish_pass_when_design_scores_are_low(m
         ],
     )
 
-    evaluations = iter(
-        [
-            EvaluationResult(
-                buildReadinessScore=0.92,
-                requirementCoverageScore=0.88,
-                designQualityScore=0.54,
-                interactionQualityScore=0.57,
-                summary="构建与功能基本可用，但视觉完成度偏弱。",
-                issues=[],
-                designWarnings=["当前方案还没有建立 Tailwind 主题系统，视觉语言仍容易退回普通模板化页面。"],
-            ),
-            EvaluationResult(
-                buildReadinessScore=0.94,
-                requirementCoverageScore=0.9,
-                designQualityScore=0.66,
-                interactionQualityScore=0.63,
-                summary="视觉和交互已补强，但仍建议人工审阅。",
-                issues=[],
-                designWarnings=["页面层级已增强，但移动端细节仍可继续优化。"],
-            ),
-        ]
-    )
-    repair_calls = {"count": 0, "category": None}
+    repair_calls = {"count": 0}
 
-    monkeypatch.setattr(strategy.critic, "evaluate", lambda current_state: next(evaluations))
+    monkeypatch.setattr(
+        strategy.critic,
+        "evaluate",
+        lambda current_state: EvaluationResult(
+            buildReadinessScore=0.92,
+            requirementCoverageScore=0.88,
+            designQualityScore=0.54,
+            interactionQualityScore=0.57,
+            summary="构建与功能基本可用，但视觉完成度偏弱。",
+            issues=[],
+            designWarnings=["当前界面编排仍偏通用模板，和产品场景及设计目标的贴合度还可以更强。"],
+        ),
+    )
 
     def fake_repair(current_state, spec, context_snapshot, repair_context):
         repair_calls["count"] += 1
-        repair_calls["category"] = repair_context.category
         current_state.file_operations = [
             FileOperation.model_validate(
                 {
@@ -475,10 +401,8 @@ def test_verify_loop_runs_single_design_polish_pass_when_design_scores_are_low(m
 
     next_state = AgentSessionState.model_validate(result["state"])
 
-    assert repair_calls["count"] == 1
-    assert repair_calls["category"] == "design_polish"
+    assert repair_calls["count"] == 0
     assert next_state.error is None
     assert next_state.evaluation is not None
-    assert next_state.evaluation.design_quality_score == 0.66
-    assert next_state.evaluation.interaction_quality_score == 0.63
-    assert next_state.evaluation.design_warnings[0] == "已执行一轮 Tailwind 视觉增强，当前结果仍建议人工审阅视觉层级与交互细节。"
+    assert next_state.evaluation.design_quality_score == 0.54
+    assert next_state.evaluation.interaction_quality_score == 0.57

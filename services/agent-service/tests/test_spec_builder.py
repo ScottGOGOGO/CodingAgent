@@ -1,4 +1,5 @@
 from app.models import AgentSessionState, ReasoningMode, StructuredPlanOutput, StructuredSpecOutput
+from app.services.errors import GenerationFailure
 from app.services.spec_builder import SpecBuilder
 from langchain_core.prompts import ChatPromptTemplate
 
@@ -302,3 +303,50 @@ def test_structured_plan_output_accepts_object_shaped_steps() -> None:
         "补齐训练计划模块: 支持创建与编辑训练计划",
         "增加进度跟踪页面",
     ]
+
+
+def test_build_spec_falls_back_to_heuristics_when_model_returns_empty_response(monkeypatch) -> None:
+    builder = SpecBuilder()
+    state = AgentSessionState(
+        sessionId="session-3",
+        projectId="project-3",
+        reasoningMode=ReasoningMode.PLAN_SOLVE,
+        workingSpec={
+            "title": "AI学习助手",
+            "summary": "一个面向高中生的学习产品。",
+            "goal": "帮助用户完成每日学习计划、错题整理和复习提醒。",
+            "targetUsers": ["中国高中生"],
+            "screens": ["首页", "今日计划", "错题本", "学习进度"],
+            "constraints": ["先用模拟数据", "不需要登录"],
+            "brandAndVisualDirection": "清晰、现代、偏教育产品",
+        },
+    )
+
+    def fail_invoke_structured(**kwargs):
+        raise GenerationFailure("模型返回了空响应，未提供 JSON 结果。")
+
+    monkeypatch.setattr(builder, "_invoke_structured", fail_invoke_structured)
+
+    spec = builder.build_spec(state)
+
+    assert spec.title == "AI学习助手"
+    assert spec.target_users == ["中国高中生"]
+    assert [screen.name for screen in spec.screens][:4] == ["首页", "今日计划", "错题本", "学习进度"]
+    assert spec.core_flows
+    assert "兜底推断" in "".join(spec.assumptions)
+
+
+def test_build_plan_falls_back_to_heuristics_when_model_returns_empty_response(monkeypatch) -> None:
+    builder = SpecBuilder()
+    state = make_state()
+
+    def fail_invoke_structured(**kwargs):
+        raise GenerationFailure("模型返回了空响应，未提供 JSON 结果。")
+
+    monkeypatch.setattr(builder, "_invoke_structured", fail_invoke_structured)
+
+    spec = builder.build_spec(state)
+    plan = builder.build_plan(spec)
+
+    assert len(plan) == 5
+    assert all(step.status == "pending" for step in plan)

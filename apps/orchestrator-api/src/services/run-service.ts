@@ -1,8 +1,4 @@
-import { randomUUID } from "node:crypto";
-
 import type {
-  AgentSessionState,
-  ApprovalRequest,
   ClarificationAnswer,
   ProjectEvent,
   ProjectRecord,
@@ -19,136 +15,20 @@ import { ConflictError, NotFoundError } from "../errors.js";
 import type { ProjectEventBus } from "../events.js";
 import type { ProjectStore } from "../store.js";
 import type { WorkspaceService } from "../workspace.js";
-import { CommandExecutionError } from "../runner.js";
 import { ExecutionWorker } from "./execution-worker.js";
 import type { ProposalValidator } from "./proposal-validator.js";
+import { RunApprovalService } from "./run/run-approval-service.js";
+import { createSessionRecord, initialSessionState, newRun } from "./run/run-session-factory.js";
+import { now, summarizeRunFailure } from "./run/run-state.js";
+import { RunTurnProcessor } from "./run/run-turn-processor.js";
 
-function now() {
-  return new Date().toISOString();
-}
-
-function appendMessage(
-  state: AgentSessionState,
-  role: "user" | "assistant",
-  content?: string,
-) {
-  const normalized = content?.trim();
-  if (!normalized) {
-    return;
-  }
-
-  state.messages.push({
-    id: randomUUID(),
-    role,
-    content: normalized,
-    createdAt: now(),
-  });
-}
-
-function normalizeProjectStatus(status: ProjectRecord["status"] | AgentSessionState["status"]): ProjectRecord["status"] {
-  return status === "error" ? "failed" : status;
-}
-
-function decorateStateWithRun(sessionState: AgentSessionState, run: RunRecord) {
-  sessionState.run = {
-    id: run.id,
-    status: run.status,
-    phase: run.phase,
-    approvalRequest: run.approvalRequest,
-    providerRoute: run.providerRoute,
-    evaluation: run.evaluation,
-    usage: run.usage,
-    error: run.error,
-  };
-}
-
-function buildApproval(project: ProjectRecord, run: RunRecord): ApprovalRequest {
-  return {
-    runId: run.id,
-    projectId: project.id,
-    summary: run.state.assistantSummary ?? "Review the proposed changes before execution.",
-    createdAt: now(),
-    expiresAt: new Date(Date.now() + 1000 * 60 * 60).toISOString(),
-  };
-}
-
-function formatClarificationAnswers(
-  sessionState: AgentSessionState,
-  clarificationAnswers?: ClarificationAnswer[],
-): string | undefined {
-  if (!clarificationAnswers?.length) {
-    return undefined;
-  }
-
-  const questionLookup = new Map(
-    (sessionState.clarificationDecision?.questions ?? []).map((item) => [item.id, item.question]),
-  );
-  const lines = ["Additional clarification from the user:"];
-
-  for (const answer of clarificationAnswers) {
-    const normalized = answer.answer.trim();
-    if (!normalized) {
-      continue;
-    }
-    lines.push(`Question: ${questionLookup.get(answer.questionId) ?? answer.questionId}`);
-    lines.push(`Answer: ${normalized}`);
-  }
-
-  return lines.length > 1 ? lines.join("\n") : undefined;
-}
-
-function extractFailureExcerpt(output: string): string | undefined {
-  const cleanedLines = output
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .filter((line) => !/^> /.test(line))
-    .filter((line) => !/^npm (notice|warn)/i.test(line));
-
-  if (!cleanedLines.length) {
-    return undefined;
-  }
-
-  const interestingLines = cleanedLines.filter((line) =>
-    /error|failed|unexpected|invalid|parse|syntax|cannot|missing|ts\d+|vite|rollup|json|html|index\.html|tsconfig/i.test(line),
-  );
-  const excerpt = (interestingLines.length ? interestingLines : cleanedLines).slice(-4).join(" | ");
-  return excerpt.length > 420 ? `${excerpt.slice(0, 417)}...` : excerpt;
-}
-
-export function summarizeRunFailure(error: unknown): string {
-  if (error instanceof CommandExecutionError) {
-    const command = error.command.join(" ");
-    const excerpt = extractFailureExcerpt(error.output);
-    return excerpt ? `${command} 失败：${excerpt}` : `命令执行失败：${command}`;
-  }
-
-  if (error instanceof Error) {
-    return error.message || "Unknown validation error";
-  }
-
-  return "Unknown validation error";
-}
-
-export function initialSessionState(projectId: string, sessionId: string, reasoningMode: ReasoningMode): AgentSessionState {
-  return {
-    sessionId,
-    projectId,
-    reasoningMode,
-    messages: [],
-    workingSpec: {},
-    planSteps: [],
-    fileChangeSummary: [],
-    fileOperations: [],
-    executionManifest: [],
-    versionNumber: 0,
-    assumptions: [],
-    lastContextPaths: [],
-    status: "draft",
-  };
-}
+export { initialSessionState } from "./run/run-session-factory.js";
+export { summarizeRunFailure } from "./run/run-state.js";
 
 export class RunService {
+  private readonly turnProcessor: RunTurnProcessor;
+  private readonly approvalService: RunApprovalService;
+
   constructor(
     private readonly store: ProjectStore,
     private readonly bus: ProjectEventBus,
@@ -156,24 +36,22 @@ export class RunService {
     private readonly agentClient: AgentClient,
     private readonly worker: ExecutionWorker,
     private readonly proposalValidator: ProposalValidator,
-  ) {}
+  ) {
+    const effects = {
+      persist: this.persist.bind(this),
+      publish: this.publish.bind(this),
+    };
+    this.turnProcessor = new RunTurnProcessor(this.store, this.workspace, this.agentClient, this.proposalValidator, effects);
+    this.approvalService = new RunApprovalService(this.worker, effects);
+  }
 
   async createSession(project: ProjectRecord, reasoningMode: ReasoningMode): Promise<SessionRecord> {
-    const createdAt = now();
-    const session: SessionRecord = {
-      id: randomUUID(),
-      projectId: project.id,
-      reasoningMode,
-      createdAt,
-      updatedAt: createdAt,
-      state: initialSessionState(project.id, project.currentSessionId || randomUUID(), reasoningMode),
-    };
-    session.state.sessionId = session.id;
+    const session = createSessionRecord(project, reasoningMode);
     project.currentSessionId = session.id;
     project.reasoningMode = reasoningMode;
     project.session = session.state;
     project.status = "draft";
-    project.updatedAt = createdAt;
+    project.updatedAt = session.createdAt;
     await this.store.createSession(session);
     await this.store.saveProject(project);
     return session;
@@ -188,11 +66,11 @@ export class RunService {
   }): Promise<RunCreateResponse> {
     const project = await this.requireProject(args.projectId);
     const session = await this.requireSession(args.sessionId);
-    const run = this.newRun(project, session, args.reasoningMode ?? session.reasoningMode);
+    const run = newRun(project, session, args.reasoningMode ?? session.reasoningMode);
     await this.store.createRun(run);
     this.publish({ type: "run.started", projectId: project.id, createdAt: now(), payload: { project, run } });
 
-    return this.processTurn(project, session, run, args.userMessage, args.clarificationAnswers);
+    return this.turnProcessor.processTurn(project, session, run, args.userMessage, args.clarificationAnswers);
   }
 
   async submitRunInput(
@@ -206,7 +84,7 @@ export class RunService {
 
     const project = await this.requireProject(run.projectId);
     const session = await this.requireSession(run.sessionId);
-    return this.processTurn(project, session, run, input.userMessage, input.clarificationAnswers);
+    return this.turnProcessor.processTurn(project, session, run, input.userMessage, input.clarificationAnswers);
   }
 
   async approveRun(runId: string, approved: boolean): Promise<RunApproveResponse> {
@@ -218,45 +96,7 @@ export class RunService {
       throw new ConflictError("Run is not waiting for approval.");
     }
 
-    if (!approved) {
-      run.status = "cancelled";
-      run.phase = "report";
-      run.updatedAt = now();
-      run.error = "Approval declined by user.";
-      session.state.status = "failed";
-      session.state.error = run.error;
-      decorateStateWithRun(session.state, run);
-      session.updatedAt = now();
-      project.status = "failed";
-      project.session = session.state;
-      project.latestRun = run;
-      project.updatedAt = now();
-      await this.persist(project, session, run);
-      this.publish({
-        type: "run.failed",
-        projectId: project.id,
-        createdAt: now(),
-        payload: { project, run, message: run.error },
-      });
-      return { project, session, run };
-    }
-
-    run.status = "queued";
-    run.phase = "execute_dispatch";
-    run.updatedAt = now();
-    session.state.status = "running";
-    session.state.runPhase = "execute_dispatch";
-    decorateStateWithRun(session.state, run);
-    session.updatedAt = now();
-    project.status = "running";
-    project.session = session.state;
-    project.latestRun = run;
-    project.updatedAt = now();
-
-    await this.persist(project, session, run);
-    this.worker.enqueue(run.id);
-    this.publish({ type: "run.updated", projectId: project.id, createdAt: now(), payload: { project, run } });
-    return { project, session, run };
+    return this.approvalService.approveRun(project, session, run, approved);
   }
 
   async getRun(runId: string): Promise<RunRecord> {
@@ -267,206 +107,6 @@ export class RunService {
     const run = await this.requireRun(runId);
     const session = await this.requireSession(run.sessionId);
     return { session, run };
-  }
-
-  private async processTurn(
-    project: ProjectRecord,
-    session: SessionRecord,
-    run: RunRecord,
-    userMessage?: string,
-    clarificationAnswers?: ClarificationAnswer[],
-  ): Promise<RunCreateResponse> {
-    const workspaceSnapshot = await this.workspace.readWorkspaceSnapshot(project);
-    let response;
-    try {
-      response = await this.agentClient.runTurn({
-        project,
-        userMessage,
-        clarificationAnswers,
-        reasoningMode: run.reasoningMode,
-        workspaceSnapshot,
-      });
-    } catch (error) {
-      return this.failTurn(project, session, run, error, userMessage, clarificationAnswers);
-    }
-
-    session.state = response.state;
-    session.reasoningMode = run.reasoningMode;
-    session.updatedAt = now();
-    run.state = response.state;
-    run.phase = response.state.runPhase;
-    run.providerRoute = response.state.providerRoute;
-    run.evaluation = response.state.evaluation;
-    run.updatedAt = now();
-
-    if (response.state.status === "clarifying") {
-      run.status = "awaiting_input";
-      run.approvalRequest = undefined;
-    } else if (response.state.status === "awaiting_approval") {
-      try {
-        const validatedState = await this.proposalValidator.validate(project, {
-          ...run,
-          state: response.state,
-        });
-        session.state = validatedState;
-        run.state = validatedState;
-        run.phase = validatedState.runPhase;
-        run.providerRoute = validatedState.providerRoute;
-        run.evaluation = validatedState.evaluation;
-      } catch (error) {
-        return this.failResolvedTurn(project, session, run, error, response.state);
-      }
-
-      run.status = "awaiting_approval";
-      run.approvalRequest = buildApproval(project, run);
-      await this.store.saveApproval(run.approvalRequest);
-    } else if (response.state.status === "error" || response.state.status === "failed") {
-      run.status = "failed";
-      run.error = response.state.error;
-    } else {
-      run.status = "completed";
-    }
-
-    decorateStateWithRun(session.state, run);
-    project.currentSessionId = session.id;
-    project.reasoningMode = run.reasoningMode;
-    project.session = session.state;
-    project.latestRun = run;
-    project.status = normalizeProjectStatus(session.state.status);
-    project.updatedAt = now();
-
-    await this.persist(project, session, run);
-
-    if (run.status === "awaiting_approval") {
-      this.publish({
-        type: "run.approval_required",
-        projectId: project.id,
-        createdAt: now(),
-        payload: { project, run },
-      });
-    } else if (run.status === "failed") {
-      this.publish({
-        type: "run.failed",
-        projectId: project.id,
-        createdAt: now(),
-        payload: { project, run, message: run.error },
-      });
-    } else {
-      this.publish({ type: "run.updated", projectId: project.id, createdAt: now(), payload: { project, run } });
-    }
-
-    this.publish({ type: "project.updated", projectId: project.id, createdAt: now(), payload: { project } });
-    return { project, session, run };
-  }
-
-  private async failResolvedTurn(
-    project: ProjectRecord,
-    session: SessionRecord,
-    run: RunRecord,
-    error: unknown,
-    state: AgentSessionState,
-  ): Promise<RunCreateResponse> {
-    const message = summarizeRunFailure(error);
-
-    session.state = {
-      ...state,
-      evaluation: undefined,
-      error: message,
-      status: "failed",
-      runPhase: "report",
-      assistantSummary: `生成失败：${message}`,
-    };
-    appendMessage(session.state, "assistant", session.state.assistantSummary);
-
-    run.status = "failed";
-    run.phase = "report";
-    run.error = message;
-    run.evaluation = undefined;
-    run.state = session.state;
-    run.updatedAt = now();
-
-    decorateStateWithRun(session.state, run);
-    session.updatedAt = now();
-
-    project.currentSessionId = session.id;
-    project.reasoningMode = run.reasoningMode;
-    project.status = "failed";
-    project.session = session.state;
-    project.latestRun = run;
-    project.updatedAt = now();
-
-    await this.persist(project, session, run);
-    this.publish({
-      type: "run.failed",
-      projectId: project.id,
-      createdAt: now(),
-      payload: { project, run, message },
-    });
-    this.publish({ type: "project.updated", projectId: project.id, createdAt: now(), payload: { project } });
-    return { project, session, run };
-  }
-
-  private async failTurn(
-    project: ProjectRecord,
-    session: SessionRecord,
-    run: RunRecord,
-    error: unknown,
-    userMessage?: string,
-    clarificationAnswers?: ClarificationAnswer[],
-  ): Promise<RunCreateResponse> {
-    const message = summarizeRunFailure(error);
-    const userTurn = userMessage?.trim() || formatClarificationAnswers(session.state, clarificationAnswers);
-
-    appendMessage(session.state, "user", userTurn);
-    session.state.evaluation = undefined;
-    session.state.error = message;
-    session.state.status = "failed";
-    session.state.runPhase = "report";
-    session.state.assistantSummary = `生成失败：${message}`;
-    appendMessage(session.state, "assistant", session.state.assistantSummary);
-
-    run.status = "failed";
-    run.phase = "report";
-    run.error = message;
-    run.evaluation = undefined;
-    run.state = session.state;
-    run.updatedAt = now();
-
-    decorateStateWithRun(session.state, run);
-    session.updatedAt = now();
-
-    project.currentSessionId = session.id;
-    project.reasoningMode = run.reasoningMode;
-    project.status = "failed";
-    project.session = session.state;
-    project.latestRun = run;
-    project.updatedAt = now();
-
-    await this.persist(project, session, run);
-    this.publish({
-      type: "run.failed",
-      projectId: project.id,
-      createdAt: now(),
-      payload: { project, run, message },
-    });
-    this.publish({ type: "project.updated", projectId: project.id, createdAt: now(), payload: { project } });
-    return { project, session, run };
-  }
-
-  private newRun(project: ProjectRecord, session: SessionRecord, reasoningMode: ReasoningMode): RunRecord {
-    const createdAt = now();
-    return {
-      id: randomUUID(),
-      projectId: project.id,
-      sessionId: session.id,
-      reasoningMode,
-      action: "turn",
-      status: "in_progress",
-      phase: "intake",
-      createdAt,
-      updatedAt: createdAt,
-      state: session.state,
-    };
   }
 
   private async persist(project: ProjectRecord, session: SessionRecord, run: RunRecord) {

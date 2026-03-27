@@ -4,6 +4,7 @@ import re
 from json import dumps, loads
 from typing import Dict, List, Optional, Tuple
 
+from langchain_core.messages import HumanMessage
 from langchain_core.prompts import ChatPromptTemplate
 
 from app.models import (
@@ -19,7 +20,8 @@ from app.models import (
     WorkspaceFile,
 )
 from app.services.errors import GenerationFailure
-from app.services.json_parser import parse_json_response
+from app.services.json_parser import EMPTY_JSON_RESPONSE_ERROR, parse_json_response
+from app.services.local_scaffold import build_fresh_app_scaffold
 from app.services.model_provider import ModelProvider
 
 
@@ -28,6 +30,7 @@ USER_FACING_LANGUAGE_RULE = (
     "包括 assistantSummary、operation summary、界面文案、示例内容和可见标签；"
     "保留 JSON key、文件路径和必要的代码标识符格式。"
 )
+EMPTY_RESPONSE_RECOVERY_ATTEMPTS = 2
 
 
 class CodeGenerationService:
@@ -35,8 +38,7 @@ class CodeGenerationService:
         self.provider = ModelProvider()
 
     def generate(self, state: AgentSessionState, spec: AppSpec, context_snapshot: List[WorkspaceFile]) -> AgentSessionState:
-        generation = self._invoke_generation(state, spec, context_snapshot)
-        return self._apply_generation_result(state, generation, spec.title)
+        return self._apply_generation_result(state, self._invoke_generation(state, spec, context_snapshot), spec.title)
 
     def repair(
         self,
@@ -84,19 +86,18 @@ class CodeGenerationService:
                     "Do not emit op=run or shell commands. Never ask the executor to run npm install manually. "
                     "Do not ship placeholder, stub, or TODO screens. Avoid text such as 待实现, placeholder, coming soon, lorem ipsum, or empty route shells. "
                     "If a real media asset is unavailable, render a styled poster, diagram, or descriptive card instead of telling the user it is a placeholder or would be implemented later. "
-                    "Tailwind is the default styling system for new UI work. "
-                    "Prefer a theme-first Tailwind setup with tailwind.config.js, postcss.config.js, and src/index.css when building or significantly refreshing the UI. "
-                    "Define reusable theme tokens for brand colors, surface layers, shadows, radii, spacing rhythm, and type hierarchy in the Tailwind config instead of scattering arbitrary one-off utility choices. "
-                    "Use CSS variables and a strong background composition in src/index.css when they help the visual system feel branded and intentional. "
+                    "You are free to choose the UI approach and component stack that best fits the brief. "
+                    "Tailwind CSS, Radix UI primitives, shadcn/ui-style local components, Framer Motion, React Router, lucide-react, Zustand, TanStack Query, clsx, tailwind-merge, and similar lightweight React ecosystem tools are allowed when they materially improve the result. "
+                    "Use the smallest dependency set that meaningfully helps the app. "
                     "If you use Tailwind utility classes, @tailwind directives, or @apply, you must also add the complete Tailwind toolchain and config files in the same response. "
-                    "You may add lucide-react for icons and framer-motion for a few meaningful page-level or section-level interactions, but do not introduce shadcn/ui, Tailwind component kits, or other heavy UI frameworks. "
                     "Assume the automatic JSX runtime is enabled, so do not import React by default unless you need React namespace APIs such as React.useState. "
                     "Avoid introducing unused imports, unused variables, unused functions, or unused useState setters. "
                     "If only the state value is used, destructure useState as [value] instead of [value, setValue]. "
                     "Do not leave code comments that describe unfinished UI as placeholder or TODO. "
                     "At least one primary route must render a fully designed screen with real sections, realistic sample content, clear hierarchy, and visible interaction feedback that reflect the spec and designTargets. "
-                    "Avoid generic template output such as a simple top nav plus a stack of white cards on a flat background. "
-                    "Do not fall back to system-default product UI patterns with plain header + sidebar/nav + card grid unless the spec clearly demands a utilitarian admin console. "
+                    "Avoid generic template output that ignores the actual product domain or designTargets, but do not force every app into one house style. "
+                    "Let the visual language, layout rhythm, and component choices follow the brief rather than a fixed template recipe. "
+                    "Do not introduce a framework or runtime outside React + Vite TypeScript. "
                     "Every local import you reference must either already exist in the selected workspace context or be created/updated in this same response. "
                     "Do not import missing local components, pages, hooks, utils, or stylesheets. "
                     "Do not return partial file fragments in content. "
@@ -116,8 +117,9 @@ class CodeGenerationService:
                     "Latest conversation:\n{messages}\n\n"
                     "Normalized app spec:\n{spec}\n\n"
                     "Selected implementation context:\n{workspace}\n\n"
-                    "For a fresh app, prefer creating package.json, tsconfig.json, vite.config.ts, index.html, tailwind.config.js, postcss.config.js, src/index.css, src/main.tsx, and src/App.tsx in the same response.\n"
-                    "Interpret spec.designTargets as the visual brief: the layout, theme tokens, component styling, and motion choices should clearly embody it.\n"
+                    "For a fresh app, prefer creating package.json, tsconfig.json, vite.config.ts, index.html, src/main.tsx, and src/App.tsx in the same response, plus any config or local modules your implementation depends on.\n"
+                    "If you add external packages, include them in package.json in the same response.\n"
+                    "Interpret spec.designTargets as the visual brief: the layout, styling system, component language, and motion choices should clearly embody it.\n"
                     "If the app uses multiple routes, each visible route must present substantive UI instead of route stubs.\n"
                     "Return only the operations needed for this turn.",
                 ),
@@ -133,6 +135,8 @@ class CodeGenerationService:
             )
             return self._invoke_and_normalize(model, messages, context_snapshot)
         except Exception as exc:
+            if self._should_use_fresh_app_scaffold_fallback(context_snapshot, exc):
+                return build_fresh_app_scaffold(spec)
             if isinstance(exc, GenerationFailure):
                 raise
             raise GenerationFailure(f"代码生成模型在生成代码时失败：{exc}") from exc
@@ -153,11 +157,9 @@ class CodeGenerationService:
                     "Do not emit op=run or shell commands. Express dependency fixes as file edits, usually by updating package.json. "
                     "Do not leave placeholder, TODO, or stub UI behind after the repair. "
                     "Replace user-facing placeholder copy with finished UI, even if the content is backed by sample data. "
-                    "Tailwind is the preferred styling system for UI-heavy repairs. "
-                    "If the current project lacks Tailwind and the repair improves the visual system, you may introduce Tailwind, but you must also add the complete Tailwind toolchain and config files in the same response. "
-                    "Preserve existing product scope while improving hierarchy, theme tokens, responsive layout, and interaction quality. "
-                    "If the repair category is design_polish, focus on visual refinement, stronger section rhythm, better responsive composition, and a few meaningful motion moments without changing the core data model or removing features. "
-                    "For design_polish, do not replace the app with a generic template; strengthen the current concept using Tailwind theme tokens, lucide-react, and framer-motion only when they materially improve the UI. "
+                    "Preserve the existing product scope and visual direction unless the repair context explicitly requires a broader change. "
+                    "You may add or keep Tailwind CSS, Radix UI primitives, shadcn/ui-style local components, Framer Motion, React Router, lucide-react, Zustand, TanStack Query, clsx, tailwind-merge, and similar lightweight React ecosystem tools when they materially help resolve the issue. "
+                    "Do not force the project back to a single preferred visual stack or house style. "
                     "Remove unused React imports when the automatic JSX runtime is active. "
                     "Fix TypeScript noUnusedLocals and noUnusedParameters issues by removing or using unused imports, variables, and useState setters. "
                     "If only the state value is used, destructure useState as [value] instead of [value, setValue]. "
@@ -213,11 +215,18 @@ class CodeGenerationService:
         except Exception as exc:
             structured_error = exc
 
+        if structured_error is not None and self._is_transport_failure(structured_error):
+            raise GenerationFailure(f"结构化输出失败：{structured_error}") from structured_error
+
         try:
             response = model.invoke(messages)
-            parsed_result = parse_json_response(response.content, StructuredGeneratedCodeOutput)
-            return self._normalize_generation_output(parsed_result, context_snapshot)
+            return self._normalize_raw_generation_response(response, context_snapshot)
         except Exception as raw_exc:
+            if self._is_empty_response_error(raw_exc):
+                try:
+                    return self._retry_empty_response(model, messages, context_snapshot)
+                except Exception as retry_exc:
+                    raw_exc = retry_exc
             if structured_error is not None:
                 raise GenerationFailure(
                     f"结构化输出失败：{structured_error}；原始 JSON 回退也失败：{raw_exc}"
@@ -225,6 +234,78 @@ class CodeGenerationService:
             if isinstance(raw_exc, GenerationFailure):
                 raise
             raise GenerationFailure(f"原始 JSON 回退失败：{raw_exc}") from raw_exc
+
+    @staticmethod
+    def _should_use_fresh_app_scaffold_fallback(context_snapshot: List[WorkspaceFile], error: Exception) -> bool:
+        if context_snapshot:
+            return False
+        return CodeGenerationService._is_transport_failure(error) or CodeGenerationService._is_structured_output_exhaustion(error)
+
+    @staticmethod
+    def _is_transport_failure(error: Exception) -> bool:
+        message = str(error).lower()
+        markers = (
+            "connection error",
+            "apiconnectionerror",
+            "server disconnected",
+            "remoteprotocolerror",
+            "timed out",
+            "timeout",
+            "connection reset",
+            "connection aborted",
+            "unable to connect",
+        )
+        return any(marker in message for marker in markers)
+
+    @staticmethod
+    def _is_structured_output_exhaustion(error: Exception) -> bool:
+        message = str(error)
+        return EMPTY_JSON_RESPONSE_ERROR in message or "结构化输出失败" in message or "原始 JSON 回退失败" in message
+
+    @staticmethod
+    def _is_empty_response_error(error: Exception) -> bool:
+        return EMPTY_JSON_RESPONSE_ERROR in str(error)
+
+    def _retry_empty_response(
+        self,
+        model: object,
+        messages: object,
+        context_snapshot: List[WorkspaceFile],
+    ) -> GeneratedCodeOutput:
+        last_error: Exception | None = None
+
+        for attempt in range(EMPTY_RESPONSE_RECOVERY_ATTEMPTS):
+            retry_messages = list(messages)
+            if attempt == EMPTY_RESPONSE_RECOVERY_ATTEMPTS - 1:
+                retry_messages.append(HumanMessage(content=self._build_empty_response_retry_prompt()))
+            try:
+                response = model.invoke(retry_messages)
+                return self._normalize_raw_generation_response(response, context_snapshot)
+            except Exception as exc:
+                last_error = exc
+                if not self._is_empty_response_error(exc):
+                    raise
+
+        if last_error is None:
+            last_error = GenerationFailure(EMPTY_JSON_RESPONSE_ERROR)
+        raise last_error
+
+    def _normalize_raw_generation_response(
+        self,
+        response: object,
+        context_snapshot: List[WorkspaceFile],
+    ) -> GeneratedCodeOutput:
+        content = getattr(response, "content", response)
+        parsed_result = parse_json_response(content, StructuredGeneratedCodeOutput)
+        return self._normalize_generation_output(parsed_result, context_snapshot)
+
+    @staticmethod
+    def _build_empty_response_retry_prompt() -> str:
+        return (
+            "你上一条回复为空，没有返回任何 JSON。"
+            "请立即只返回一个完整的 JSON 对象，顶层必须包含 assistantSummary 和 operations，"
+            "不要附带解释、Markdown、代码块或空白文本。"
+        )
 
     def _normalize_generation_output(
         self,

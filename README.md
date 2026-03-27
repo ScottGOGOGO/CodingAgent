@@ -50,3 +50,12 @@ npm run dev:playground
 - `MODEL_API_KEY`, `MODEL_BASE_URL`, and `MODEL_NAME` are the highest-priority settings and are the recommended way to switch providers.
 - If `MODEL_*` is empty, the runtime falls back to the provider-specific block selected by `MODEL_PROVIDER`. When `MODEL_PROVIDER=openai_compatible`, it auto-picks the first complete block that has both an API key and a model name.
 - `QWEN_*`, `OPENAI_*`, `GEMINI_*`, and `CLAUDE_*` are env presets only. They work when the target endpoint is OpenAI-compatible. Direct proprietary APIs that are not OpenAI-compatible still need a code adapter.
+
+## Internal Module Boundaries
+
+- `apps/playground`
+  Thin operator UI. `App.tsx` drives the chat + preview surface, while `hooks/useProject.ts` owns project loading, message submission, approval flow, and SSE updates.
+- `apps/orchestrator-api`
+  Public HTTP boundary plus execution orchestration. `RunService` is the single run facade; `services/run/*` owns session creation, turn processing, and approval transitions. `ProposalValidator` is the preflight coordinator, while `services/preflight/*` owns static validation, autofixers, and repair context building.
+- `services/agent-service`
+  LLM runtime and graph execution. `strategies/base.py` is a thin adapter and graph node host, `services/verify_loop.py` owns verify/repair-or-polish decisions, `services/generation_guard.py` owns placeholder/import/materialization checks, and `app/models/` is the barrel-backed split model package that preserves `from app.models import ...`.

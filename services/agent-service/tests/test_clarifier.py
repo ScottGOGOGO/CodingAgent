@@ -1,5 +1,6 @@
 from app.models import (
     AgentSessionState,
+    ChatRole,
     ClarificationAnswer,
     ClarificationDecision,
     ClarificationQuestion,
@@ -8,6 +9,7 @@ from app.models import (
     WorkingSpec,
 )
 from app.services.clarifier import DynamicClarifier, append_user_message, apply_clarification_answers
+from app.services.errors import GenerationFailure
 from langchain_core.prompts import ChatPromptTemplate
 
 
@@ -136,3 +138,127 @@ def test_clarifier_prefers_assume_ready_for_rich_prompt_with_non_blocking_gaps()
     )
 
     assert should_assume_ready
+
+
+def test_clarifier_forces_initial_clarification_for_first_turn_by_default() -> None:
+    clarifier = DynamicClarifier()
+    state = append_user_message(
+        make_state(),
+        "帮我生成一个针对零基础初学者的网球自学计划应用，面向18岁零基础用户，需要视频教学、练习计划制定、进度跟踪、动作纠正和社区交流功能。",
+    )
+
+    should_force = clarifier._should_force_initial_clarification(
+        state,
+        WorkingSpec(
+            title="网球自学计划应用",
+            summary="帮助零基础用户系统化学习网球。",
+            targetUsers=["18岁零基础用户"],
+            screens=["首页", "课程页"],
+        ),
+    )
+
+    assert should_force is True
+
+
+def test_clarifier_backfills_two_high_value_questions_for_initial_turn() -> None:
+    clarifier = DynamicClarifier()
+    state = append_user_message(make_state(), "帮我做一个学习应用")
+
+    questions = clarifier._ensure_question_budget(
+        state,
+        WorkingSpec(),
+        questions=[],
+        missing_information=["目标用户与使用场景"],
+        minimum=2,
+        maximum=4,
+    )
+
+    assert len(questions) >= 2
+    assert any("主要给谁用" in question.question for question in questions)
+    assert any("核心任务" in question.question or "首版必须包含哪些功能" in question.question for question in questions)
+
+
+def test_clarifier_assumes_ready_after_multiple_followups_when_only_boundary_gaps_remain() -> None:
+    clarifier = DynamicClarifier()
+    state = append_user_message(make_state(), "帮我做一个学习类应用。")
+    state = append_user_message(
+        state,
+        "面向准备考研的大学生，先做网页应用，核心是学习计划、刷题、错题本、进度统计和 AI 答疑。",
+    )
+    state = append_user_message(
+        state,
+        "首版覆盖英语和政治，计划自动生成也可手动调整，AI 先做题目追问和有限自由问答。",
+    )
+
+    should_assume_ready = clarifier._should_assume_ready(
+        state=state,
+        working_spec=WorkingSpec(
+            title="考研学习网页应用",
+            summary="帮助考研用户完成计划、练习、错题复盘和 AI 答疑。",
+            goal="帮助用户连续学习和刷题。",
+            targetUsers=["准备考研的大学生"],
+            screens=["学习首页", "任务计划", "题库练习", "错题本", "进度统计"],
+            coreFlows=["制定计划", "刷题练习", "错题复盘", "AI 追问"],
+        ),
+        questions=[
+            ClarificationQuestion(question="首版题库准备怎么来？"),
+            ClarificationQuestion(question="首版是否需要完整登录注册？"),
+            ClarificationQuestion(question="AI 自由问答希望控制到什么边界？"),
+        ],
+        missing_information=["题库内容来源", "登录方式", "AI 使用限制"],
+    )
+
+    assert should_assume_ready is True
+
+
+def test_clarifier_falls_back_to_default_questions_when_model_returns_empty_response(monkeypatch) -> None:
+    clarifier = DynamicClarifier()
+    state = append_user_message(make_state(), "帮我做一个学习应用")
+
+    def fail_invoke(**kwargs):
+        raise GenerationFailure("模型返回了空响应，未提供 JSON 结果。")
+
+    monkeypatch.setattr("app.services.clarifier.invoke_structured_json", fail_invoke)
+
+    result = clarifier.decide(state)
+
+    assert result.status == "clarifying"
+    assert result.clarification_decision is not None
+    assert result.clarification_decision.action == "ask"
+    assert len(result.clarification_decision.questions) >= 2
+
+
+def test_clarifier_falls_back_to_assume_ready_for_rich_followup_when_model_returns_empty_response(monkeypatch) -> None:
+    clarifier = DynamicClarifier()
+    state = append_user_message(make_state(), "帮我做一个AI学习助手")
+    state.messages.append(
+        state.messages[0].model_copy(
+            update={
+                "id": "assistant-1",
+                "role": ChatRole.ASSISTANT,
+                "content": "你希望这个AI学习助手主要给谁用？首版必须包含哪些功能？",
+            }
+        )
+    )
+    state = append_user_message(
+        state,
+        "面向中国高中生，核心是根据教材章节生成每日学习计划、错题整理和复习提醒。必须有首页、今日计划、错题本、学习进度。支持上传题目图片并给出讲解，先用模拟数据，不需要登录。风格希望清晰、现代、偏教育产品。",
+    )
+    state.working_spec = WorkingSpec(
+        title="AI学习助手",
+        summary="一个面向学习场景的AI助手产品，帮助用户更高效地完成学习任务，但具体目标用户、核心场景和功能边界仍待明确。",
+        goal="通过AI能力提升学习效率与学习效果，具体目标需根据目标用户和学习场景进一步细化。",
+    )
+
+    def fail_invoke(**kwargs):
+        raise GenerationFailure("模型返回了空响应，未提供 JSON 结果。")
+
+    monkeypatch.setattr("app.services.clarifier.invoke_structured_json", fail_invoke)
+
+    result = clarifier.decide(state)
+
+    assert result.status == "planning"
+    assert result.clarification_decision is not None
+    assert result.clarification_decision.action == "assume_ready"
+    assert result.working_spec.target_users == ["中国高中生"]
+    assert [screen.name for screen in result.working_spec.screens][:4] == ["首页", "今日计划", "错题本", "学习进度"]

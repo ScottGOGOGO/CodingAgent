@@ -10,6 +10,8 @@ import yaml
 
 from app.services.errors import GenerationFailure
 
+EMPTY_JSON_RESPONSE_ERROR = "模型返回了空响应，未提供 JSON 结果。"
+
 
 def _extract_json_substring(text: str) -> str:
     """Try to find the outermost JSON object or array in *text*."""
@@ -187,7 +189,7 @@ def parse_json_response(text: object, schema: Type[BaseModel]) -> BaseModel:
     cleaned = _coerce_text_input(text).strip()
 
     if not cleaned:
-        raise GenerationFailure("模型返回了空响应，未提供 JSON 结果。")
+        raise GenerationFailure(EMPTY_JSON_RESPONSE_ERROR)
 
     # Strategy 1: extract the outermost JSON object/array directly.
     candidate = _extract_json_substring(cleaned)

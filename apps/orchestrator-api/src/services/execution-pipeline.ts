@@ -12,6 +12,10 @@ function now() {
   return new Date().toISOString();
 }
 
+function durationMs(startedAt: number) {
+  return Date.now() - startedAt;
+}
+
 export interface PipelineResult {
   previewUrl?: string;
   gitCommit?: string;
@@ -46,22 +50,35 @@ export class ExecutionPipeline {
     const snapshotStep = this.findStep(run, "git_snapshot");
 
     if (stopStep) {
+      const startedAt = Date.now();
       await this.runner.execute(stopStep, project, emitLog);
+      console.info(`[execution-pipeline] stage=stop_preview projectId=${project.id} durationMs=${durationMs(startedAt)}`);
     }
 
     if (installStep) {
+      const startedAt = Date.now();
       await this.runner.execute(installStep, project, emitLog);
+      console.info(
+        `[execution-pipeline] stage=install_dependencies projectId=${project.id} durationMs=${durationMs(startedAt)}`,
+      );
     }
 
     if (buildStep) {
+      const startedAt = Date.now();
       await this.runBuildFixLoop(project, run, buildStep, installStep, emitLog);
+      console.info(`[execution-pipeline] stage=build_web_app projectId=${project.id} durationMs=${durationMs(startedAt)}`);
     }
 
     if (previewStep) {
+      const startedAt = Date.now();
       previewUrl = (await this.runner.execute(previewStep, project, emitLog)) ?? previewUrl;
+      console.info(
+        `[execution-pipeline] stage=start_vite_preview projectId=${project.id} durationMs=${durationMs(startedAt)}`,
+      );
     }
 
     if (healthStep) {
+      const startedAt = Date.now();
       previewUrl = (await this.runner.execute(
         {
           type: "health_check",
@@ -72,10 +89,13 @@ export class ExecutionPipeline {
         project,
         emitLog,
       )) ?? previewUrl;
+      console.info(`[execution-pipeline] stage=health_check projectId=${project.id} durationMs=${durationMs(startedAt)}`);
     }
 
     if (snapshotStep?.message) {
+      const startedAt = Date.now();
       gitCommit = await this.workspace.snapshot(project, snapshotStep.message);
+      console.info(`[execution-pipeline] stage=git_snapshot projectId=${project.id} durationMs=${durationMs(startedAt)}`);
     }
 
     return { previewUrl, gitCommit, sessionState: run.state };
@@ -104,6 +124,7 @@ export class ExecutionPipeline {
         const buildError = error.output || (await this.workspace.readPreviewLogTail(project)) || error.message;
         await emitLog(`Build failed on attempt ${attempt}. Requesting repair before retrying.\n`);
 
+        const repairStartedAt = Date.now();
         const repair = await this.agentClient.runRepair({
           project,
           reasoningMode: project.reasoningMode,
@@ -115,6 +136,9 @@ export class ExecutionPipeline {
             buildError,
           },
         });
+        console.info(
+          `[execution-pipeline] stage=repair projectId=${project.id} attempt=${attempt} durationMs=${durationMs(repairStartedAt)}`,
+        );
 
         if (repair.state.error) {
           throw new Error(repair.state.error);
@@ -152,7 +176,11 @@ export class ExecutionPipeline {
 
         if (installStep) {
           await emitLog(`Re-installing dependencies after repair attempt ${attempt}.\n`);
+          const reinstallStartedAt = Date.now();
           await this.runner.execute(installStep, project, emitLog);
+          console.info(
+            `[execution-pipeline] stage=reinstall_dependencies projectId=${project.id} attempt=${attempt} durationMs=${durationMs(reinstallStartedAt)}`,
+          );
         }
       }
     }

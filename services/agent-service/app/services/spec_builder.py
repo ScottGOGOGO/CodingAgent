@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import re
 from json import dumps
 from typing import List
@@ -26,6 +27,19 @@ USER_FACING_LANGUAGE_RULE = (
     "除非用户明确要求其他语言，所有面向用户的自然语言字段都必须使用简体中文，"
     "保留 JSON key、文件路径和代码标识符的必要格式。"
 )
+logger = logging.getLogger(__name__)
+
+
+def _should_use_heuristic_fallback(error: Exception) -> bool:
+    message = str(error)
+    markers = (
+        "模型返回了空响应",
+        "结构化输出失败",
+        "原始 JSON 回退失败",
+        "Connection error",
+        "Invalid json output",
+    )
+    return any(marker in message for marker in markers)
 
 DESIGN_PROFILES = {
     "sports": {
@@ -122,72 +136,23 @@ class SpecBuilder:
                 ),
             ]
         )
-        result = self._invoke_structured(
-            role="planner",
-            output_schema=StructuredSpecOutput,
-            prompt=prompt,
-            payload={
-                "messages": dumps([message.model_dump(mode="json", by_alias=True) for message in state.messages], ensure_ascii=False),
-                "working_spec": dumps(state.working_spec.model_dump(mode="json", by_alias=True), ensure_ascii=False),
-                "assumptions": "\n".join(state.assumptions) or "无",
-            },
-        )
-        return AppSpec(
-            appName=slugify(self._coalesce_text(result.title, working_spec.title, working_spec.goal, "generated-app"), fallback="generated-app"),
-            title=self._coalesce_text(result.title, working_spec.title, working_spec.goal, "生成的应用"),
-            summary=self._coalesce_text(
-                result.summary,
-                working_spec.summary,
-                result.goal,
-                working_spec.goal,
-                "根据最新对话整理出的可实施 Web 应用方案。",
-            ),
-            goal=self._coalesce_text(
-                result.goal,
-                working_spec.goal,
-                working_spec.summary,
-                state.messages[-1].content if state.messages else None,
-                "构建一个符合用户需求、可直接实现的 Web 应用。",
-            ),
-            targetUsers=self._normalize_string_list(result.target_users or working_spec.target_users),
-            screens=self._normalize_screens(result.screens),
-            coreFlows=self._normalize_flows(result.core_flows),
-            dataModelNeeds=self._normalize_data_model_needs(result.data_model_needs),
-            integrations=self._normalize_string_list(result.integrations),
-            brandAndVisualDirection=self._coalesce_text(
-                result.brand_and_visual_direction,
-                working_spec.brand_and_visual_direction,
-                "简洁现代、可直接落地的界面风格方向。",
-            ),
-            designTargets=self._derive_design_targets(
-                title=self._coalesce_text(result.title, working_spec.title, working_spec.goal, "生成的应用"),
-                summary=self._coalesce_text(
-                    result.summary,
-                    working_spec.summary,
-                    result.goal,
-                    working_spec.goal,
-                    "根据最新对话整理出的可实施 Web 应用方案。",
-                ),
-                goal=self._coalesce_text(
-                    result.goal,
-                    working_spec.goal,
-                    working_spec.summary,
-                    state.messages[-1].content if state.messages else None,
-                    "构建一个符合用户需求、可直接实现的 Web 应用。",
-                ),
-                target_users=self._normalize_string_list(result.target_users or working_spec.target_users),
-                screens=self._normalize_screens(result.screens),
-                flows=self._normalize_flows(result.core_flows),
-                brand_and_visual_direction=self._coalesce_text(
-                    result.brand_and_visual_direction,
-                    working_spec.brand_and_visual_direction,
-                    "简洁现代、可直接落地的界面风格方向。",
-                ),
-            ),
-            constraints=self._normalize_string_list(result.constraints),
-            successCriteria=self._normalize_string_list(result.success_criteria),
-            assumptions=self._normalize_string_list(result.assumptions),
-        )
+        try:
+            result = self._invoke_structured(
+                role="planner",
+                output_schema=StructuredSpecOutput,
+                prompt=prompt,
+                payload={
+                    "messages": dumps([message.model_dump(mode="json", by_alias=True) for message in state.messages], ensure_ascii=False),
+                    "working_spec": dumps(state.working_spec.model_dump(mode="json", by_alias=True), ensure_ascii=False),
+                    "assumptions": "\n".join(state.assumptions) or "无",
+                },
+            )
+            return self._build_app_spec_from_structured_result(state, result)
+        except GenerationFailure as exc:
+            if not _should_use_heuristic_fallback(exc):
+                raise
+            logger.warning("spec builder structured output failed, using heuristic fallback: %s", exc)
+            return self._build_fallback_spec(state)
 
     def build_plan(self, spec: AppSpec) -> List[PlanStep]:
         prompt = ChatPromptTemplate.from_messages(
@@ -204,15 +169,144 @@ class SpecBuilder:
                 ),
             ]
         )
-        result = self._invoke_structured(
-            role="planner",
-            output_schema=StructuredPlanOutput,
-            prompt=prompt,
-            payload={"spec": dumps(spec.model_dump(mode="json", by_alias=True), ensure_ascii=False)},
+        try:
+            result = self._invoke_structured(
+                role="planner",
+                output_schema=StructuredPlanOutput,
+                prompt=prompt,
+                payload={"spec": dumps(spec.model_dump(mode="json", by_alias=True), ensure_ascii=False)},
+            )
+            return [
+                PlanStep(id=f"step-{index + 1}", title=step, detail=step, status="pending")
+                for index, step in enumerate(result.steps[:5])
+            ]
+        except GenerationFailure as exc:
+            if not _should_use_heuristic_fallback(exc):
+                raise
+            logger.warning("plan builder structured output failed, using heuristic fallback: %s", exc)
+            return self._build_fallback_plan(spec)
+
+    def _build_app_spec_from_structured_result(self, state: AgentSessionState, result: StructuredSpecOutput) -> AppSpec:
+        working_spec = state.working_spec
+        title = self._coalesce_text(result.title, working_spec.title, working_spec.goal, "生成的应用")
+        summary = self._coalesce_text(
+            result.summary,
+            working_spec.summary,
+            result.goal,
+            working_spec.goal,
+            "根据最新对话整理出的可实施 Web 应用方案。",
         )
+        goal = self._coalesce_text(
+            result.goal,
+            working_spec.goal,
+            working_spec.summary,
+            state.messages[-1].content if state.messages else None,
+            "构建一个符合用户需求、可直接实现的 Web 应用。",
+        )
+        target_users = self._normalize_string_list(result.target_users or working_spec.target_users)
+        screens = self._normalize_screens(result.screens)
+        flows = self._normalize_flows(result.core_flows)
+        brand_and_visual_direction = self._coalesce_text(
+            result.brand_and_visual_direction,
+            working_spec.brand_and_visual_direction,
+            "简洁现代、可直接落地的界面风格方向。",
+        )
+        return AppSpec(
+            appName=slugify(self._coalesce_text(result.title, working_spec.title, working_spec.goal, "generated-app"), fallback="generated-app"),
+            title=title,
+            summary=summary,
+            goal=goal,
+            targetUsers=target_users,
+            screens=screens,
+            coreFlows=flows,
+            dataModelNeeds=self._normalize_data_model_needs(result.data_model_needs),
+            integrations=self._normalize_string_list(result.integrations),
+            brandAndVisualDirection=brand_and_visual_direction,
+            designTargets=self._derive_design_targets(
+                title=title,
+                summary=summary,
+                goal=goal,
+                target_users=target_users,
+                screens=screens,
+                flows=flows,
+                brand_and_visual_direction=brand_and_visual_direction,
+            ),
+            constraints=self._normalize_string_list(result.constraints),
+            successCriteria=self._normalize_string_list(result.success_criteria),
+            assumptions=self._normalize_string_list(result.assumptions),
+        )
+
+    def _build_fallback_spec(self, state: AgentSessionState) -> AppSpec:
+        working_spec = state.working_spec
+        title = self._coalesce_text(working_spec.title, working_spec.goal, "生成的应用")
+        summary = self._coalesce_text(
+            working_spec.summary,
+            working_spec.goal,
+            "根据最新对话整理出的可实施 Web 应用方案。",
+        )
+        goal = self._coalesce_text(
+            working_spec.goal,
+            working_spec.summary,
+            state.messages[-1].content if state.messages else None,
+            "构建一个符合用户需求、可直接实现的 Web 应用。",
+        )
+        target_users = self._normalize_string_list(working_spec.target_users)
+        screens = self._normalize_screens(working_spec.screens)
+        flows = self._normalize_flows(working_spec.core_flows) or self._fallback_flows_from_screens(screens)
+        brand_and_visual_direction = self._coalesce_text(
+            working_spec.brand_and_visual_direction,
+            "简洁现代、可直接落地的界面风格方向。",
+        )
+        assumptions = self._normalize_string_list(working_spec.assumptions + ["规格整理阶段使用了本地兜底推断。"])
+        return AppSpec(
+            appName=slugify(self._coalesce_text(working_spec.title, working_spec.goal, "generated-app"), fallback="generated-app"),
+            title=title,
+            summary=summary,
+            goal=goal,
+            targetUsers=target_users,
+            screens=screens or self._normalize_screens([ScreenSpec(name="首页"), ScreenSpec(name="核心功能页")]),
+            coreFlows=flows,
+            dataModelNeeds=self._normalize_data_model_needs(working_spec.data_model_needs),
+            integrations=self._normalize_string_list(working_spec.integrations),
+            brandAndVisualDirection=brand_and_visual_direction,
+            designTargets=self._derive_design_targets(
+                title=title,
+                summary=summary,
+                goal=goal,
+                target_users=target_users,
+                screens=screens or self._normalize_screens([ScreenSpec(name="首页"), ScreenSpec(name="核心功能页")]),
+                flows=flows,
+                brand_and_visual_direction=brand_and_visual_direction,
+            ),
+            constraints=self._normalize_string_list(working_spec.constraints),
+            successCriteria=self._normalize_string_list(working_spec.success_criteria) or ["用户可以顺利完成一次核心学习流程"],
+            assumptions=assumptions,
+        )
+
+    @staticmethod
+    def _build_fallback_plan(spec: AppSpec) -> List[PlanStep]:
+        screen_names = [screen.name for screen in spec.screens[:3]]
+        focus = "、".join(screen_names) if screen_names else "核心页面"
+        steps = [
+            f"初始化 {spec.title} 的 React + Vite 页面骨架与全局样式基线。",
+            f"完成 {focus} 的主界面布局与核心信息分区。",
+            "补齐关键交互、示例数据状态和主要组件的可视反馈。",
+            "整理路由、状态管理与必要的数据模型展示逻辑。",
+            "执行构建校验并修复可见问题，确保可以进入审批与预览。",
+        ]
+        return [PlanStep(id=f"step-{index + 1}", title=step, detail=step, status="pending") for index, step in enumerate(steps)]
+
+    def _fallback_flows_from_screens(self, screens: List[ScreenSpec]) -> List[FlowSpec]:
+        if not screens:
+            return []
+        first_screen = screens[0].name
         return [
-            PlanStep(id=f"step-{index + 1}", title=step, detail=step, status="pending")
-            for index, step in enumerate(result.steps[:5])
+            FlowSpec(
+                id="flow-primary",
+                name=f"{first_screen}核心流程",
+                steps=[f"进入{first_screen}", "浏览关键内容", "完成主要操作"],
+                success="用户可以顺利完成一次核心任务。",
+            )
         ]
 
     def _invoke_structured(self, role: str, output_schema, prompt: ChatPromptTemplate, payload: dict):

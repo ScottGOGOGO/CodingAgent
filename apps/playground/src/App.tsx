@@ -95,10 +95,10 @@ export default function App() {
   const composerHint = readyToConfirm
     ? "The draft is ready. Confirm to write files, verify the build, and launch the preview."
     : clarificationQuestions.length > 0
-      ? "Reply naturally in chat with the missing details. No separate form is needed."
+      ? "The agent is collecting missing requirements first. Reply naturally in chat with users, goals, must-have features, or boundaries."
       : busy
-        ? "Generating the app, verifying the build, or repairing the current run."
-        : "Describe what you want to build in one natural prompt, then keep chatting normally.";
+        ? "The agent is clarifying the brief or preparing a draft. Full install/build starts only after you confirm."
+        : "Describe what you want to build in one natural prompt. The agent will clarify first, then generate a draft in chat.";
   const conversation = useMemo(() => {
     if (messages.length) {
       return messages;
@@ -109,7 +109,7 @@ export default function App() {
         id: "welcome",
         role: "assistant" as const,
         content:
-          "Describe the app you want to build, and I will clarify missing details, plan the work, generate the code, and prepare a preview for approval.",
+          "Describe the app you want to build, and I will first clarify missing details in chat, then plan the work, generate a draft, and after you confirm I will verify it and prepare the preview.",
         createdAt: new Date().toISOString(),
       },
     ];

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from json import dumps
+import logging
 from typing import List, Optional
 
 from langchain_core.prompts import ChatPromptTemplate
@@ -9,6 +10,20 @@ from app.models import AgentSessionState, EvaluationResult, StructuredCriticOutp
 from app.services.errors import GenerationFailure
 from app.services.model_provider import ModelProvider
 from app.services.structured_output import invoke_structured_json
+
+logger = logging.getLogger(__name__)
+
+
+def _should_use_heuristic_fallback(error: Exception) -> bool:
+    message = str(error)
+    markers = (
+        "模型返回了空响应",
+        "结构化输出失败",
+        "原始 JSON 回退失败",
+        "Connection error",
+        "Invalid json output",
+    )
+    return any(marker in message for marker in markers)
 
 
 class CriticService:
@@ -24,8 +39,9 @@ class CriticService:
                     "Judge whether the proposed code changes are likely to build, whether they satisfy the product requirements, and whether the UI quality is strong enough for approval. "
                     "Placeholder routes, TODO text, 待实现 labels, lorem ipsum, blank scaffolding, or screen shells with no substantive UI are blocking failures and must be reported as critical issues. "
                     "A route-only skeleton is not approval-ready even if it technically builds. "
-                    "Treat generic template UI as a quality failure signal: simple header plus nav plus plain card grid, flat white panels with weak hierarchy, missing theme tokens, or almost no interaction feedback should reduce design quality. "
-                    "Tailwind used only for spacing without a theme system, or a UI that ignores the supplied designTargets, should also reduce the design score. "
+                    "Do not require Tailwind or any specific UI library. "
+                    "Only reduce design quality when the result clearly ignores the supplied designTargets, feels obviously incomplete, or falls back to a generic template that does not fit the product domain. "
+                    "Requirement coverage and build stability matter more than visual conformity to any house style. "
                     "Unless the user explicitly requests another language, summary and issues must be written in Simplified Chinese. "
                     "If you include severity values in issue objects, use critical/high/medium/low. "
                     "Return valid JSON only with keys: buildReadinessScore, requirementCoverageScore, designQualityScore, interactionQualityScore, summary, issues, designWarnings.",
@@ -79,10 +95,35 @@ class CriticService:
                 issues=issues,
                 designWarnings=design_warnings,
             )
-        except Exception as exc:
-            if isinstance(exc, GenerationFailure):
+        except GenerationFailure as exc:
+            if not _should_use_heuristic_fallback(exc):
                 raise
+            logger.warning("critic structured output failed, using heuristic fallback: %s", exc)
+            return self._fallback_evaluation(state)
+        except Exception as exc:
             raise GenerationFailure(f"评审模型在检查生成结果时失败：{exc}") from exc
+
+    def _fallback_evaluation(self, state: AgentSessionState) -> EvaluationResult:
+        issues = self._fallback_issues(state)
+        design_warnings = self._merge_design_warnings([], self._infer_design_warnings(state))
+        build_readiness_score = self._normalize_score(None, issues, fallback=0.78)
+        requirement_coverage_score = self._normalize_score(None, issues, fallback=0.74)
+        design_quality_score = self._normalize_design_score(None, design_warnings, fallback=0.72)
+        interaction_quality_score = self._normalize_design_score(
+            None,
+            self._interaction_warnings_only(design_warnings),
+            fallback=0.7,
+        )
+        summary = self._normalize_summary(None, issues, design_warnings)
+        return EvaluationResult(
+            buildReadinessScore=build_readiness_score,
+            requirementCoverageScore=requirement_coverage_score,
+            designQualityScore=design_quality_score,
+            interactionQualityScore=interaction_quality_score,
+            summary=summary,
+            issues=issues,
+            designWarnings=design_warnings,
+        )
 
     @staticmethod
     def _normalize_issues(items: List[object]) -> List[str]:
@@ -217,36 +258,32 @@ class CriticService:
         if not state.app_spec:
             return warnings
 
-        if not self._has_tailwind_system(state):
-            warnings.append("当前方案还没有建立 Tailwind 主题系统，视觉语言仍容易退回普通模板化页面。")
+        if self._looks_minimal_ui(state):
+            warnings.append("当前界面内容和层级还比较简略，建议在进入审批前补强关键版块与可见反馈。")
 
-        if self._uses_single_surface_css(state):
-            warnings.append("页面结构仍偏普通首屏加卡片堆叠，背景构图和视觉层级不够鲜明。")
+        if self._looks_generic_template(state):
+            warnings.append("当前界面编排仍偏通用模板，和产品场景及设计目标的贴合度还可以更强。")
 
         motion_intensity = (state.app_spec.design_targets.motion_intensity or "").strip()
         if motion_intensity and "低" not in motion_intensity and not self._has_interaction_feedback(state):
-            warnings.append("关键页面缺少明确的交互动效或悬停反馈，互动体验仍然偏弱。")
+            warnings.append("需求希望有更明显的动态或反馈，但当前关键页面的交互反馈仍偏弱。")
 
         return warnings
 
     @staticmethod
-    def _has_tailwind_system(state: AgentSessionState) -> bool:
-        config_paths = {"tailwind.config.js", "tailwind.config.ts", "postcss.config.js", "postcss.config.cjs", "postcss.config.mjs"}
-        paths = {operation.path for operation in state.file_operations}
-        if paths.intersection(config_paths):
-            return True
-
-        combined = "\n".join(CriticService._operation_text_fragments(state))
-        return "tailwindcss" in combined or "@tailwind" in combined
+    def _looks_minimal_ui(state: AgentSessionState) -> bool:
+        combined = "\n".join(CriticService._operation_text_fragments(state)).lower()
+        minimal_markers = (
+            "return null",
+            "return <></>",
+            "return <div></div>",
+            "return <main></main>",
+            "export default function app() { return null; }",
+        )
+        return any(marker in combined for marker in minimal_markers) or len(combined.strip()) < 120
 
     @staticmethod
-    def _uses_single_surface_css(state: AgentSessionState) -> bool:
-        paths = {operation.path for operation in state.file_operations}
-        if "src/App.css" not in paths:
-            return False
-        if any(path.endswith("tailwind.config.js") or path.endswith("tailwind.config.ts") for path in paths):
-            return False
-
+    def _looks_generic_template(state: AgentSessionState) -> bool:
         combined = "\n".join(CriticService._operation_text_fragments(state))
         generic_markers = ("<header", "<nav", "className=\"card", "className='card", ".card {", "hero", "dashboard")
         marker_hits = sum(1 for marker in generic_markers if marker in combined)
@@ -266,6 +303,22 @@ class CriticService:
             "group-hover",
         )
         return any(marker in combined for marker in interaction_markers)
+
+    @staticmethod
+    def _fallback_issues(state: AgentSessionState) -> List[str]:
+        issues: List[str] = []
+        combined = "\n".join(CriticService._operation_text_fragments(state)).lower()
+        if not state.file_operations:
+            issues.append("[critical] 当前没有生成任何可执行文件操作。")
+
+        placeholder_markers = ("todo", "placeholder", "coming soon", "待实现", "lorem ipsum", "empty route")
+        if any(marker in combined for marker in placeholder_markers):
+            issues.append("[critical] 当前生成结果仍包含占位内容或空壳页面，需要继续补全。")
+
+        if len(combined.strip()) < 200:
+            issues.append("[high] 当前生成内容偏少，首版页面和交互可能还不够完整。")
+
+        return issues
 
     @staticmethod
     def _operation_text_fragments(state: AgentSessionState) -> List[str]:
