@@ -1,6 +1,7 @@
 from app.models import AgentSessionState, ReasoningMode, StructuredCriticOutput
 from app.services.errors import GenerationFailure
 from app.services.critic import CriticService
+import pytest
 
 
 def make_state() -> AgentSessionState:
@@ -47,7 +48,7 @@ def test_critic_normalizes_object_issues_and_missing_summary(monkeypatch) -> Non
     monkeypatch.setattr(
         critic.provider,
         "require_chat_model",
-        lambda role: type(
+        lambda role, timeout_seconds=None: type(
             "FakeModel",
             (),
             {
@@ -94,14 +95,14 @@ def test_structured_critic_output_accepts_string_scores_and_single_issue() -> No
     assert result.design_warnings == [{"title": "视觉层级偏弱"}]
 
 
-def test_critic_falls_back_to_heuristics_when_model_returns_empty_response(monkeypatch) -> None:
+def test_critic_raises_when_model_returns_empty_response(monkeypatch) -> None:
     critic = CriticService()
     state = make_state()
 
     monkeypatch.setattr(
         critic.provider,
         "require_chat_model",
-        lambda role: type(
+        lambda role, timeout_seconds=None: type(
             "FakeModel",
             (),
             {
@@ -112,8 +113,5 @@ def test_critic_falls_back_to_heuristics_when_model_returns_empty_response(monke
         )(),
     )
 
-    result = critic.evaluate(state)
-
-    assert result.issues
-    assert any("[critical]" in issue.lower() or "[high]" in issue.lower() for issue in result.issues)
-    assert 0.0 <= result.build_readiness_score <= 1.0
+    with pytest.raises(GenerationFailure, match="模型返回了空响应"):
+        critic.evaluate(state)

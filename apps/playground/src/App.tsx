@@ -53,7 +53,10 @@ function formatPhaseLabel(phase?: string) {
 
 function MessageBubble({ message }: { message: ChatMessage }) {
   return (
-    <article className={`chat-bubble ${message.role === "user" ? "chat-bubble-user" : "chat-bubble-assistant"}`}>
+    <article
+      data-testid="chat-bubble"
+      className={`chat-bubble ${message.role === "user" ? "chat-bubble-user" : "chat-bubble-assistant"}`}
+    >
       <div className="bubble-meta">
         <span className="bubble-role">{message.role === "user" ? "You" : "Agent"}</span>
         <span className="bubble-time">{formatMessageTime(message.createdAt)}</span>
@@ -163,7 +166,7 @@ export default function App() {
           </div>
 
           <div className="chat-header-actions">
-            <span className={`status-chip status-${project?.status ?? "draft"}`}>
+            <span className={`status-chip status-${project?.status ?? "draft"}`} data-testid="project-status">
               {STATUS_LABELS[project?.status ?? "draft"]}
             </span>
             <button type="button" className="ghost-button" onClick={handleNewChat}>
@@ -173,7 +176,7 @@ export default function App() {
         </header>
 
         <div className="chat-scroll">
-          <div className="chat-stream" ref={scrollRef}>
+          <div className="chat-stream" ref={scrollRef} data-testid="chat-stream">
             {conversation.map((message) => (
               <MessageBubble key={message.id} message={message} />
             ))}
@@ -201,11 +204,12 @@ export default function App() {
                 <span className="composer-status-label">
                   {showPreviewOverlay ? "Generating" : readyToConfirm ? "Ready" : "Latest run"}
                 </span>
-                <strong>{formatPhaseLabel(latestRun.phase)}</strong>
+                <strong data-testid="latest-run-phase">{formatPhaseLabel(latestRun.phase)}</strong>
               </div>
             ) : null}
 
             <textarea
+              data-testid="composer-input"
               value={draft}
               onChange={(event) => setDraft(event.target.value)}
               onKeyDown={handleComposerKeyDown}
@@ -220,7 +224,12 @@ export default function App() {
 
             <div className="composer-actions">
               <p className="composer-hint">{composerHint}</p>
-              <button type="button" onClick={handleSend} disabled={busy || (!readyToConfirm && !draft.trim())}>
+              <button
+                data-testid="composer-send"
+                type="button"
+                onClick={handleSend}
+                disabled={busy || (!readyToConfirm && !draft.trim())}
+              >
                 {composerButtonLabel}
               </button>
             </div>
@@ -237,7 +246,7 @@ export default function App() {
           </div>
 
           <div className="preview-header-actions">
-            <span className={`preview-badge preview-${project?.preview.status ?? "idle"}`}>
+            <span className={`preview-badge preview-${project?.preview.status ?? "idle"}`} data-testid="preview-badge">
               {project?.preview.status ?? "idle"}
             </span>
             {previewUrl ? (
@@ -250,7 +259,7 @@ export default function App() {
 
         <div className="preview-stage">
           <div className="preview-frame-shell">
-            {previewUrl ? <iframe title="Generated preview" src={previewUrl} /> : null}
+            {previewUrl ? <iframe data-testid="preview-frame" title="Generated preview" src={previewUrl} /> : null}
 
             {!previewUrl ? (
               <div className={`preview-placeholder ${showPreviewOverlay ? "preview-placeholder-live" : ""}`}>

@@ -1,3 +1,5 @@
+import { performance } from "node:perf_hooks";
+
 import type {
   AgentSessionState,
   ClarificationAnswer,
@@ -45,6 +47,19 @@ export class RunTurnProcessor {
   ): Promise<RunCreateResponse> {
     const workspaceSnapshot = await this.workspace.readWorkspaceSnapshot(project);
     let response;
+    const startedAt = performance.now();
+    console.info(
+      [
+        "event=run_turn_started",
+        `projectId=${project.id}`,
+        `sessionId=${session.id}`,
+        `runId=${run.id}`,
+        `reasoningMode=${run.reasoningMode}`,
+        `workspaceFiles=${workspaceSnapshot.length}`,
+        `userMessageLength=${userMessage?.length ?? 0}`,
+        `clarificationAnswers=${clarificationAnswers?.length ?? 0}`,
+      ].join(" "),
+    );
     try {
       response = await this.agentClient.runTurn({
         project,
@@ -53,7 +68,28 @@ export class RunTurnProcessor {
         reasoningMode: run.reasoningMode,
         workspaceSnapshot,
       });
+      console.info(
+        [
+          "event=run_turn_agent_completed",
+          `projectId=${project.id}`,
+          `sessionId=${session.id}`,
+          `runId=${run.id}`,
+          `durationMs=${Math.round(performance.now() - startedAt)}`,
+          `stateStatus=${response.state.status}`,
+          `runPhase=${response.state.runPhase}`,
+        ].join(" "),
+      );
     } catch (error) {
+      console.info(
+        [
+          "event=run_turn_agent_failed",
+          `projectId=${project.id}`,
+          `sessionId=${session.id}`,
+          `runId=${run.id}`,
+          `durationMs=${Math.round(performance.now() - startedAt)}`,
+          `error=${JSON.stringify(summarizeRunFailure(error))}`,
+        ].join(" "),
+      );
       return this.failTurn(project, session, run, error, userMessage, clarificationAnswers);
     }
 

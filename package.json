@@ -12,6 +12,9 @@
     "dev:agent": "cd services/agent-service && uvicorn app.main:app --reload --port 8001",
     "dev:api": "npm --workspace @vide/orchestrator-api run dev",
     "dev:playground": "npm --workspace @vide/playground run dev",
+    "smoke:api": "node scripts/smoke-demo.mjs",
+    "smoke:ui": "playwright test --config=playwright.config.mjs",
+    "smoke:all": "npm run smoke:api && npm run smoke:ui",
     "test": "npm run test --workspaces --if-present",
     "typecheck": "npm run typecheck --workspaces --if-present"
   },
@@ -20,6 +23,7 @@
     "npm": ">=10.0.0"
   },
   "devDependencies": {
+    "@playwright/test": "^1.59.0",
     "typescript": "^5.8.2"
   }
 }

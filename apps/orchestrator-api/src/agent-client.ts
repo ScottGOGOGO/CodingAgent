@@ -10,6 +10,9 @@ import type {
   WorkspaceFile,
 } from "@vide/contracts";
 
+import { performance } from "node:perf_hooks";
+import { Agent } from "undici";
+
 const DEFAULT_TIMEOUT_MS = 420_000;
 const DEFAULT_RETRY_DELAY_MS = 350;
 const MAX_TRANSPORT_ATTEMPTS = 2;
@@ -21,6 +24,8 @@ const RETRYABLE_AGENT_ERROR_CODES = new Set([
   "ECONNABORTED",
   "UND_ERR_SOCKET",
   "UND_ERR_CONNECT_TIMEOUT",
+  "UND_ERR_HEADERS_TIMEOUT",
+  "UND_ERR_BODY_TIMEOUT",
 ]);
 
 type ErrorWithCause = Error & {
@@ -28,23 +33,84 @@ type ErrorWithCause = Error & {
   code?: string;
 };
 
+type AgentLogContext = {
+  projectId?: string;
+  sessionId?: string;
+  reasoningMode?: ReasoningMode;
+};
+
+export function resolveTransportTimeoutOptions(timeoutMs: number): {
+  headersTimeout: number;
+  bodyTimeout: number;
+} {
+  if (timeoutMs > 0) {
+    const transportTimeoutMs = timeoutMs + 5_000;
+    return {
+      headersTimeout: transportTimeoutMs,
+      bodyTimeout: transportTimeoutMs,
+    };
+  }
+
+  return {
+    headersTimeout: 0,
+    bodyTimeout: 0,
+  };
+}
+
 export class AgentClient {
+  private readonly dispatcher: Agent;
+  private closed = false;
+  private readonly timeoutEnabled: boolean;
+
   constructor(
     private readonly baseUrl: string,
     private readonly timeoutMs = DEFAULT_TIMEOUT_MS,
     private readonly retryDelayMs = DEFAULT_RETRY_DELAY_MS,
-  ) {}
+  ) {
+    this.timeoutEnabled = this.timeoutMs > 0;
+    this.dispatcher = new Agent(resolveTransportTimeoutOptions(this.timeoutMs));
+  }
 
   private async post<T>(path: string, payload: unknown): Promise<T> {
     const url = `${this.baseUrl}${path}`;
     let lastError: Error | null = null;
+    const context = this.extractLogContext(payload);
 
     for (let attempt = 1; attempt <= MAX_TRANSPORT_ATTEMPTS; attempt += 1) {
+      const startedAt = performance.now();
+      this.log("agent_request_started", {
+        path,
+        url,
+        attempt,
+        timeoutMs: this.timeoutEnabled ? this.timeoutMs : "disabled",
+        ...context,
+      });
+
       try {
-        return await this.performPost<T>(url, path, payload);
+        const response = await this.performPost<T>(url, path, payload);
+        this.log("agent_request_succeeded", {
+          path,
+          url,
+          attempt,
+          durationMs: Math.round(performance.now() - startedAt),
+          ...context,
+        });
+        return response;
       } catch (error) {
         const normalized = this.normalizeAgentError(path, url, error);
         lastError = normalized;
+        const code = this.extractErrorCode(error);
+        this.log("agent_request_failed", {
+          path,
+          url,
+          attempt,
+          durationMs: Math.round(performance.now() - startedAt),
+          code: code || undefined,
+          rawError: this.describeError(error),
+          normalizedError: normalized.message,
+          retryable: this.shouldRetryTransportError(error),
+          ...context,
+        });
 
         if (attempt >= MAX_TRANSPORT_ATTEMPTS || !this.shouldRetryTransportError(error)) {
           throw normalized;
@@ -58,16 +124,18 @@ export class AgentClient {
   }
 
   private async performPost<T>(url: string, path: string, payload: unknown): Promise<T> {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
+    const controller = this.timeoutEnabled ? new AbortController() : null;
+    const timeout = controller ? setTimeout(() => controller.abort(), this.timeoutMs) : null;
 
     try {
-      const response = await fetch(url, {
+      const requestInit: RequestInit & { dispatcher: Agent } = {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(payload),
-        signal: controller.signal,
-      });
+        signal: controller?.signal,
+        dispatcher: this.dispatcher,
+      };
+      const response = await fetch(url, requestInit);
 
       if (!response.ok) {
         const text = await response.text();
@@ -81,7 +149,9 @@ export class AgentClient {
       }
       throw error;
     } finally {
-      clearTimeout(timeout);
+      if (timeout) {
+        clearTimeout(timeout);
+      }
     }
   }
 
@@ -106,8 +176,9 @@ export class AgentClient {
 
   private normalizeAgentError(path: string, url: string, error: unknown): Error {
     if (error instanceof DOMException && error.name === "AbortError") {
+      const timeoutLabel = this.timeoutEnabled ? `${Math.round(this.timeoutMs / 1000)} 秒` : "配置的等待窗口";
       return new Error(
-        `本地 agent 服务 ${path} 在 ${Math.round(this.timeoutMs / 1000)} 秒内没有返回。请检查模型调用是否卡住，或稍后重试。`,
+        `本地 agent 服务 ${path} 在 ${timeoutLabel}内没有返回。请检查模型调用是否卡住，或稍后重试。`,
       );
     }
 
@@ -118,6 +189,12 @@ export class AgentClient {
 
     if (code === "ETIMEDOUT" || code === "UND_ERR_CONNECT_TIMEOUT") {
       return new Error(`连接本地 agent 服务超时（${url}）。请确认 agent 服务地址可访问。`);
+    }
+
+    if (code === "UND_ERR_HEADERS_TIMEOUT" || code === "UND_ERR_BODY_TIMEOUT") {
+      return new Error(
+        `本地 agent 服务响应超时（${url}）。agent 处理耗时超过本地传输窗口，请检查生成阶段是否卡住或适当提高超时时间。`,
+      );
     }
 
     if (code === "ECONNRESET" || code === "EPIPE" || code === "UND_ERR_SOCKET" || code === "ECONNABORTED") {
@@ -192,5 +269,67 @@ export class AgentClient {
     };
 
     return this.post<AgentRepairResponse>("/agent/repair", payload);
+  }
+
+  private extractLogContext(payload: unknown): AgentLogContext {
+    if (!payload || typeof payload !== "object") {
+      return {};
+    }
+
+    const candidate = payload as {
+      projectId?: unknown;
+      sessionId?: unknown;
+      reasoningMode?: unknown;
+    };
+
+    return {
+      projectId: typeof candidate.projectId === "string" ? candidate.projectId : undefined,
+      sessionId: typeof candidate.sessionId === "string" ? candidate.sessionId : undefined,
+      reasoningMode: typeof candidate.reasoningMode === "string" ? (candidate.reasoningMode as ReasoningMode) : undefined,
+    };
+  }
+
+  private describeError(error: unknown): string {
+    if (!(error instanceof Error)) {
+      return String(error);
+    }
+
+    const code = this.extractErrorCode(error);
+    const cause =
+      error.cause instanceof Error
+        ? error.cause.message
+        : typeof error.cause === "string"
+          ? error.cause
+          : undefined;
+
+    return JSON.stringify({
+      name: error.name,
+      message: error.message,
+      code: code || undefined,
+      cause,
+    });
+  }
+
+  private log(event: string, fields: Record<string, unknown>) {
+    const payload = Object.entries({ event, ...fields })
+      .filter(([, value]) => value !== undefined && value !== null && value !== "")
+      .map(([key, value]) => `${key}=${typeof value === "string" ? value : JSON.stringify(value)}`)
+      .join(" ");
+    console.info(payload);
+  }
+
+  async close(): Promise<void> {
+    if (this.closed) {
+      return;
+    }
+    this.closed = true;
+    try {
+      await this.dispatcher.close();
+    } catch (error) {
+      if (this.extractErrorCode(error) === "UND_ERR_DESTROYED") {
+        return;
+      }
+      throw error;
+    }
   }
 }

@@ -32,6 +32,8 @@ VITE_API_BASE=http://127.0.0.1:4102
 ```
 
 If your model provider is slow and `/agent/turn` requests time out during generation, increase `AGENT_SERVICE_TIMEOUT_MS` in your env file. The default is `420000` (7 minutes).
+Set `AGENT_SERVICE_TIMEOUT_MS=0` to disable the orchestrator-side request timeout and the local Undici `headersTimeout/bodyTimeout` window entirely.
+If you also set `MODEL_TIMEOUT_SECONDS=0`, long-running model calls will wait indefinitely until they return or you interrupt the process manually.
 
 Or start the agent service, API, and playground separately:
 
@@ -50,6 +52,11 @@ npm run dev:playground
 - `MODEL_API_KEY`, `MODEL_BASE_URL`, and `MODEL_NAME` are the highest-priority settings and are the recommended way to switch providers.
 - If `MODEL_*` is empty, the runtime falls back to the provider-specific block selected by `MODEL_PROVIDER`. When `MODEL_PROVIDER=openai_compatible`, it auto-picks the first complete block that has both an API key and a model name.
 - `QWEN_*`, `OPENAI_*`, `GEMINI_*`, and `CLAUDE_*` are env presets only. They work when the target endpoint is OpenAI-compatible. Direct proprietary APIs that are not OpenAI-compatible still need a code adapter.
+- If your OpenAI-compatible endpoint is already mounted at `/v1/responses`, keep that URL in `OPENAI_BASE_URL` or `MODEL_BASE_URL`; the runtime will normalize it and enable the Responses API automatically.
+- If your provider follows the CodeX-style split config, you can keep `OPENAI_BASE_URL` at the provider root and set `MODEL_WIRE_API=responses`; the runtime will normalize that to the correct `/v1` base automatically.
+- For `gpt-5.x`, you can optionally tune `MODEL_REASONING_EFFORT` and `MODEL_VERBOSITY`. A good starting point for agent-style coding flows is `low` / `low`.
+- Set `MODEL_DISABLE_RESPONSE_STORAGE=true` if your Responses-compatible provider expects response storage to be disabled (equivalent to CodeX's `disable_response_storage = true`).
+- `MODEL_TIMEOUT_SECONDS` controls the agent-side hard timeout for individual model calls. Set it to `0` only if you intentionally want the agent runtime to wait indefinitely for each stage.
 
 ## Internal Module Boundaries
 

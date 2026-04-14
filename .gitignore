@@ -16,3 +16,5 @@ data
 tmp
 logs
 apps/playground/.vite
+playwright-report
+test-results

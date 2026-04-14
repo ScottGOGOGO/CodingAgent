@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from json import dumps
-import logging
 from typing import List, Optional
 
 from langchain_core.prompts import ChatPromptTemplate
@@ -11,19 +10,7 @@ from app.services.errors import GenerationFailure
 from app.services.model_provider import ModelProvider
 from app.services.structured_output import invoke_structured_json
 
-logger = logging.getLogger(__name__)
-
-
-def _should_use_heuristic_fallback(error: Exception) -> bool:
-    message = str(error)
-    markers = (
-        "模型返回了空响应",
-        "结构化输出失败",
-        "原始 JSON 回退失败",
-        "Connection error",
-        "Invalid json output",
-    )
-    return any(marker in message for marker in markers)
+CRITIC_TIMEOUT_SECONDS = 25.0
 
 
 class CriticService:
@@ -56,7 +43,7 @@ class CriticService:
             ]
         )
         try:
-            model = self.provider.require_chat_model("critic")
+            model = self.provider.require_chat_model("critic", timeout_seconds=CRITIC_TIMEOUT_SECONDS)
             messages = prompt.format_messages(
                 spec=dumps(state.app_spec.model_dump(mode="json", by_alias=True), ensure_ascii=False),
                 plan=dumps([step.model_dump(mode="json", by_alias=True) for step in state.plan_steps], ensure_ascii=False),
@@ -71,6 +58,9 @@ class CriticService:
                     "重点修正 buildReadinessScore、requirementCoverageScore、designQualityScore、"
                     "interactionQualityScore、summary、issues 和 designWarnings 的 JSON 结构。"
                 ),
+                structured_output_method=self.provider.preferred_structured_output_method("critic"),
+                timeout_seconds=CRITIC_TIMEOUT_SECONDS,
+                invocation_name="critic",
             )
             issues = self._normalize_issues(result.issues)
             design_warnings = self._merge_design_warnings(
@@ -95,35 +85,10 @@ class CriticService:
                 issues=issues,
                 designWarnings=design_warnings,
             )
-        except GenerationFailure as exc:
-            if not _should_use_heuristic_fallback(exc):
-                raise
-            logger.warning("critic structured output failed, using heuristic fallback: %s", exc)
-            return self._fallback_evaluation(state)
         except Exception as exc:
+            if isinstance(exc, GenerationFailure):
+                raise GenerationFailure(f"评审阶段模型调用失败：{exc}") from exc
             raise GenerationFailure(f"评审模型在检查生成结果时失败：{exc}") from exc
-
-    def _fallback_evaluation(self, state: AgentSessionState) -> EvaluationResult:
-        issues = self._fallback_issues(state)
-        design_warnings = self._merge_design_warnings([], self._infer_design_warnings(state))
-        build_readiness_score = self._normalize_score(None, issues, fallback=0.78)
-        requirement_coverage_score = self._normalize_score(None, issues, fallback=0.74)
-        design_quality_score = self._normalize_design_score(None, design_warnings, fallback=0.72)
-        interaction_quality_score = self._normalize_design_score(
-            None,
-            self._interaction_warnings_only(design_warnings),
-            fallback=0.7,
-        )
-        summary = self._normalize_summary(None, issues, design_warnings)
-        return EvaluationResult(
-            buildReadinessScore=build_readiness_score,
-            requirementCoverageScore=requirement_coverage_score,
-            designQualityScore=design_quality_score,
-            interactionQualityScore=interaction_quality_score,
-            summary=summary,
-            issues=issues,
-            designWarnings=design_warnings,
-        )
 
     @staticmethod
     def _normalize_issues(items: List[object]) -> List[str]:
@@ -303,22 +268,6 @@ class CriticService:
             "group-hover",
         )
         return any(marker in combined for marker in interaction_markers)
-
-    @staticmethod
-    def _fallback_issues(state: AgentSessionState) -> List[str]:
-        issues: List[str] = []
-        combined = "\n".join(CriticService._operation_text_fragments(state)).lower()
-        if not state.file_operations:
-            issues.append("[critical] 当前没有生成任何可执行文件操作。")
-
-        placeholder_markers = ("todo", "placeholder", "coming soon", "待实现", "lorem ipsum", "empty route")
-        if any(marker in combined for marker in placeholder_markers):
-            issues.append("[critical] 当前生成结果仍包含占位内容或空壳页面，需要继续补全。")
-
-        if len(combined.strip()) < 200:
-            issues.append("[high] 当前生成内容偏少，首版页面和交互可能还不够完整。")
-
-        return issues
 
     @staticmethod
     def _operation_text_fragments(state: AgentSessionState) -> List[str]:

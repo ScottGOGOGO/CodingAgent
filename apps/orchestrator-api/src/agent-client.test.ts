@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 
 import type { AgentSessionState, ProjectRecord, ReasoningMode } from "@vide/contracts";
 
-import { AgentClient } from "./agent-client.js";
+import { AgentClient, resolveTransportTimeoutOptions } from "./agent-client.js";
 
 function makeSessionState(): AgentSessionState {
   return {
@@ -48,6 +48,20 @@ function makeFetchFailed(code: string, message = "fetch failed"): Error {
   error.cause = Object.assign(new Error(code), { code });
   return error;
 }
+
+test("resolveTransportTimeoutOptions disables Undici transport timeouts when timeout is disabled", () => {
+  assert.deepEqual(resolveTransportTimeoutOptions(0), {
+    headersTimeout: 0,
+    bodyTimeout: 0,
+  });
+});
+
+test("resolveTransportTimeoutOptions preserves timeoutMs plus transport buffer when enabled", () => {
+  assert.deepEqual(resolveTransportTimeoutOptions(420_000), {
+    headersTimeout: 425_000,
+    bodyTimeout: 425_000,
+  });
+});
 
 test("AgentClient retries once after a transient transport fetch failure", async () => {
   const client = new AgentClient("http://127.0.0.1:8001", 1_000, 0);
@@ -141,6 +155,44 @@ test("AgentClient surfaces timeout errors without retrying", async () => {
       /在 2 秒内没有返回/,
     );
     assert.equal(attempts, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("AgentClient does not install a local abort window when timeout is disabled", async () => {
+  const client = new AgentClient("http://127.0.0.1:8001", 0, 0);
+  const project = makeProject();
+  const originalFetch = globalThis.fetch;
+
+  let aborted = false;
+  globalThis.fetch = (async (_input, init) => {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    aborted = init?.signal?.aborted ?? false;
+    return new Response(
+      JSON.stringify({
+        state: {
+          ...project.session,
+          status: "clarifying",
+        },
+      }),
+      {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      },
+    );
+  }) as typeof fetch;
+
+  try {
+    const response = await client.runTurn({
+      project,
+      reasoningMode: project.reasoningMode as ReasoningMode,
+      workspaceSnapshot: [],
+      userMessage: "帮我做一个旅行攻略",
+    });
+
+    assert.equal(response.state.status, "clarifying");
+    assert.equal(aborted, false);
   } finally {
     globalThis.fetch = originalFetch;
   }

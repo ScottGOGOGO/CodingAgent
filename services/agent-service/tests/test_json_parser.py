@@ -170,3 +170,22 @@ def test_parse_json_response_accepts_block_content_lists() -> None:
 
     assert parsed.action == "ready"
     assert parsed.summary == "可以开始"
+
+
+def test_parse_json_response_ignores_reasoning_blocks_before_output_text() -> None:
+    content = [
+        {
+            "id": "rs_123",
+            "summary": [],
+            "type": "reasoning",
+        },
+        {
+            "type": "output_text",
+            "text": "{\"action\":\"ask\",\"summary\":\"还需要确认旅行偏好\"}",
+        },
+    ]
+
+    parsed = parse_json_response(content, SamplePayload)
+
+    assert parsed.action == "ask"
+    assert parsed.summary == "还需要确认旅行偏好"

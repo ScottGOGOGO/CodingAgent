@@ -97,6 +97,9 @@ def _coerce_text_input(value: object) -> str:
                 parts.append(item)
                 continue
             if isinstance(item, dict):
+                item_type = str(item.get("type") or "").strip().lower()
+                if item_type == "reasoning":
+                    continue
                 for key in ("text", "content", "value", "input", "output"):
                     candidate = item.get(key)
                     if candidate is not None:

@@ -1,6 +1,7 @@
 from app.config import get_settings
 from app.main import AgentRuntime
 from app.models import AgentRepairRequest, AgentTurnRequest, ProjectStatus, ReasoningMode
+from app.services.errors import GenerationFailure
 from app.strategies.plan_solve import PlanSolveStrategy
 
 
@@ -14,7 +15,7 @@ def test_runtime_routes_plan_solve_and_react_through_the_same_strategy_instance(
     assert plan_solve_strategy is react_strategy
 
 
-def test_runtime_returns_error_when_model_api_key_is_not_configured(monkeypatch) -> None:
+def test_runtime_returns_error_when_model_api_key_is_not_configured_before_clarification(monkeypatch) -> None:
     monkeypatch.setenv("MODEL_PROVIDER", "openai_compatible")
     monkeypatch.setenv("MODEL_API_KEY", "")
     monkeypatch.setenv("MODEL_BASE_URL", "")
@@ -33,20 +34,20 @@ def test_runtime_returns_error_when_model_api_key_is_not_configured(monkeypatch)
     get_settings.cache_clear()
 
     runtime = AgentRuntime()
-    request = AgentTurnRequest(
+    first_request = AgentTurnRequest(
         projectId="project-1",
         sessionId="session-1",
         reasoningMode=ReasoningMode.PLAN_SOLVE,
         userMessage="Build a planning workspace for product teams with a calm editorial look.",
     )
 
-    state = runtime.process_turn(request)
+    first_state = runtime.process_turn(first_request)
 
-    assert state.status == ProjectStatus.ERROR
-    assert state.error is not None
-    assert "未配置模型 API Key" in state.error
-    assert state.assistant_summary is not None
-    assert state.assistant_summary.startswith("生成失败：")
+    assert first_state.status == ProjectStatus.ERROR
+    assert first_state.error is not None
+    assert "未配置模型 API Key" in first_state.error
+    assert first_state.assistant_summary is not None
+    assert first_state.assistant_summary.startswith("生成失败：")
 
 
 def test_runtime_repair_returns_error_when_model_api_key_is_not_configured(monkeypatch) -> None:
@@ -124,3 +125,26 @@ def test_runtime_repair_returns_error_when_model_api_key_is_not_configured(monke
     assert state.status == ProjectStatus.ERROR
     assert state.error is not None
     assert "未配置模型 API Key" in state.error
+
+
+def test_runtime_process_turn_returns_failed_state_when_clarifier_generation_fails(monkeypatch) -> None:
+    runtime = AgentRuntime()
+    request = AgentTurnRequest(
+        projectId="project-2",
+        sessionId="session-2",
+        reasoningMode=ReasoningMode.PLAN_SOLVE,
+        userMessage="帮我做一个旅行攻略应用",
+    )
+
+    monkeypatch.setattr(
+        runtime.strategy.clarifier,
+        "decide",
+        lambda state: (_ for _ in ()).throw(GenerationFailure("模型返回了空响应，未提供 JSON 结果。")),
+    )
+
+    state = runtime.process_turn(request)
+
+    assert state.status == ProjectStatus.ERROR
+    assert state.error is not None
+    assert "模型返回了空响应" in state.error
+    assert state.assistant_summary == f"生成失败：{state.error}"

@@ -48,6 +48,16 @@ class Settings(BaseSettings):
     coder_model: Optional[str] = Field(default=None, alias="CODER_MODEL")
     critic_model: Optional[str] = Field(default=None, alias="CRITIC_MODEL")
     model_temperature: float = Field(default=0.0, alias="MODEL_TEMPERATURE")
+    model_wire_api: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("MODEL_WIRE_API", "WIRE_API"),
+    )
+    model_reasoning_effort: Optional[str] = Field(default=None, alias="MODEL_REASONING_EFFORT")
+    model_verbosity: Optional[str] = Field(default=None, alias="MODEL_VERBOSITY")
+    model_disable_response_storage: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("MODEL_DISABLE_RESPONSE_STORAGE", "DISABLE_RESPONSE_STORAGE"),
+    )
     model_timeout_seconds: float = Field(default=90.0, alias="MODEL_TIMEOUT_SECONDS")
     model_max_retries: int = Field(default=0, alias="MODEL_MAX_RETRIES")
     approval_round_budget: int = Field(default=3, alias="APPROVAL_ROUND_BUDGET")

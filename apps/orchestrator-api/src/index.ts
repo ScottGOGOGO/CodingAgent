@@ -40,6 +40,7 @@ registerV2Routes(app, projectService, runService);
 async function shutdown() {
   app.log.info("Shutting down...");
   await runner.stopAll();
+  await agentClient.close();
   await app.close();
 }
 

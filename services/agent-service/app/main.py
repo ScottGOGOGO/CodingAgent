@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 
 from fastapi import FastAPI
 
@@ -15,6 +16,9 @@ from app.models import (
     ReasoningMode,
 )
 from app.strategies.plan_solve import PlanSolveStrategy
+
+logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s %(message)s")
+logging.getLogger("vide.agent.stages").setLevel(logging.INFO)
 
 app = FastAPI(title="vide-agent-service", version="0.2.0")
 

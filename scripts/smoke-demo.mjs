@@ -1,114 +1,154 @@
 #!/usr/bin/env node
 
-const API_BASE = process.env.API_BASE ?? "http://127.0.0.1:4100";
-const REASONING_MODE = process.env.REASONING_MODE ?? "plan_solve";
-const POLL_INTERVAL_MS = Number(process.env.SMOKE_POLL_INTERVAL_MS ?? 3000);
-const TURN_TIMEOUT_MS = Number(process.env.SMOKE_TURN_TIMEOUT_MS ?? 420000);
-const READY_TIMEOUT_MS = Number(process.env.SMOKE_READY_TIMEOUT_MS ?? 420000);
+import { buildClarificationAnswers, SMOKE_CASES } from "./smoke-cases.mjs";
+import {
+  api,
+  assertProjectReady,
+  classifyFailure,
+  fetchProject,
+  READY_TIMEOUT_MS,
+  REASONING_MODE,
+  summarizeProject,
+  TURN_TIMEOUT_MS,
+  waitForProject,
+} from "./smoke-common.mjs";
+
 const SMOKE_CASE = process.env.SMOKE_CASE?.trim();
+const MAX_CLARIFICATION_ROUNDS = Number(process.env.SMOKE_MAX_CLARIFICATION_ROUNDS ?? 2);
 
-const CASES = [
-  {
-    name: "compat-user-message",
-    body: {
-      userMessage: "帮我生成一个面向中国大学生的校园二手交易 web 应用，需要商品发布、即时聊天、信用评分、订单管理和举报申诉。",
-      reasoningMode: REASONING_MODE,
-    },
-  },
-  {
-    name: "ui-content-message",
-    body: {
-      content: "帮我生成一个针对零基础初学者的网球自学计划应用，面向18岁零基础用户，需要视频教学、练习计划制定、进度跟踪、动作纠正和社区交流功能。",
-      reasoningMode: REASONING_MODE,
-    },
-  },
-];
+async function completeClarification(projectId, initialProject, testCase) {
+  let currentProject = initialProject;
 
-async function api(method, path, body) {
-  const response = await fetch(`${API_BASE}${path}`, {
-    method,
-    headers: body ? { "content-type": "application/json" } : undefined,
-    body: body ? JSON.stringify(body) : undefined,
-  });
-
-  if (!response.ok) {
-    const text = await response.text();
-    throw new Error(`${method} ${path} failed with ${response.status}: ${text}`);
-  }
-
-  return response.json();
-}
-
-async function waitForProject(projectId, statuses, timeoutMs) {
-  const deadline = Date.now() + timeoutMs;
-
-  while (Date.now() < deadline) {
-    const payload = await api("GET", `/projects/${projectId}`);
-    const project = payload.project;
-    const previewStatus = project.preview?.status ?? "unknown";
-    console.log(`poll project=${projectId} status=${project.status} preview=${previewStatus}`);
-    if (statuses.has(project.status)) {
-      return project;
+  for (let round = 1; round <= MAX_CLARIFICATION_ROUNDS; round += 1) {
+    if (currentProject.status !== "clarifying") {
+      return currentProject;
     }
-    await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
+
+    const questions = currentProject.session?.clarificationDecision?.questions ?? [];
+    const clarificationAnswers = buildClarificationAnswers(questions);
+    if (!clarificationAnswers.length) {
+      throw new Error(`Clarifying project ${projectId} returned no questions to answer.`);
+    }
+
+    console.log(
+      JSON.stringify(
+        summarizeProject("clarification_round_start", testCase.name, currentProject, {
+          round,
+          questionCount: clarificationAnswers.length,
+        }),
+        null,
+        2,
+      ),
+    );
+
+    await api("POST", `/projects/${projectId}/messages`, {
+      clarificationAnswers,
+      reasoningMode: REASONING_MODE,
+    });
+
+    currentProject = await waitForProject(
+      projectId,
+      new Set(["clarifying", "awaiting_approval", "failed"]),
+      TURN_TIMEOUT_MS,
+    );
+
+    console.log(JSON.stringify(summarizeProject("after_clarification_round", testCase.name, currentProject, { round }), null, 2));
   }
 
-  throw new Error(`Timed out waiting for ${Array.from(statuses).join(", ")} on ${projectId}`);
-}
-
-function summarizeProject(stage, name, project) {
-  return {
-    stage,
-    name,
-    projectId: project.id,
-    status: project.status,
-    preview: project.preview,
-    messageCount: project.session?.messages?.length ?? 0,
-    lastAssistantMessage:
-      project.session?.messages?.length
-        ? project.session.messages[project.session.messages.length - 1].content
-        : null,
-    fileOps: project.session?.fileOperations?.length ?? 0,
-  };
+  return currentProject;
 }
 
 async function runCase(testCase) {
-  const created = await api("POST", "/projects", {
-    name: testCase.name,
-    reasoningMode: REASONING_MODE,
-  });
-  const projectId = created.project.id;
-  console.log(`created ${testCase.name} project_id=${projectId}`);
+  let projectId = null;
 
-  await api("POST", `/projects/${projectId}/messages`, testCase.body);
-  const afterTurn = await waitForProject(projectId, new Set(["awaiting_approval", "failed", "clarifying"]), TURN_TIMEOUT_MS);
-  console.log(JSON.stringify(summarizeProject("after_turn", testCase.name, afterTurn), null, 2));
+  try {
+    const created = await api("POST", "/projects", {
+      name: testCase.name,
+      reasoningMode: REASONING_MODE,
+    });
+    projectId = created.project.id;
+    console.log(`created ${testCase.name} project_id=${projectId}`);
 
-  if (afterTurn.status !== "awaiting_approval") {
-    return summarizeProject("after_turn", testCase.name, afterTurn);
+    await api("POST", `/projects/${projectId}/messages`, {
+      content: testCase.prompt,
+      reasoningMode: REASONING_MODE,
+    });
+
+    const initialProject = await waitForProject(
+      projectId,
+      new Set(["awaiting_approval", "failed", "clarifying"]),
+      TURN_TIMEOUT_MS,
+    );
+    console.log(JSON.stringify(summarizeProject("after_turn", testCase.name, initialProject), null, 2));
+
+    if (initialProject.status !== testCase.expectedInitialStatus) {
+      return summarizeProject("after_turn", testCase.name, initialProject, {
+        expectedInitialStatus: testCase.expectedInitialStatus,
+        failureKind: classifyFailure(initialProject, "unexpected initial status"),
+      });
+    }
+
+    const approvalProject =
+      initialProject.status === "clarifying"
+        ? await completeClarification(projectId, initialProject, testCase)
+        : initialProject;
+
+    if (approvalProject.status !== "awaiting_approval") {
+      return summarizeProject("before_confirm", testCase.name, approvalProject, {
+        expectedStatus: "awaiting_approval",
+        failureKind: classifyFailure(approvalProject, "did not reach awaiting_approval"),
+      });
+    }
+
+    const approved = await api("POST", `/projects/${projectId}/confirm`, {});
+    const readyProject = await waitForProject(
+      approved.project.id,
+      new Set(["ready", "failed"]),
+      READY_TIMEOUT_MS,
+    );
+    assertProjectReady(readyProject, testCase.name);
+    console.log(JSON.stringify(summarizeProject("after_confirm", testCase.name, readyProject), null, 2));
+    return summarizeProject("after_confirm", testCase.name, readyProject);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const project = projectId ? await fetchProject(projectId).catch(() => null) : null;
+    if (project) {
+      console.error(`FAILURE_PROJECT_${testCase.name}=${JSON.stringify(project, null, 2)}`);
+      return summarizeProject("failed", testCase.name, project, {
+        error: message,
+        failureKind: classifyFailure(project, message),
+      });
+    }
+
+    return {
+      stage: "failed",
+      name: testCase.name,
+      projectId,
+      status: "failed",
+      previewStatus: "unknown",
+      latestRunStatus: null,
+      latestRunPhase: null,
+      providerRoute: null,
+      lastAssistantMessage: null,
+      error: message,
+      failureKind: "local_service_unreachable_or_timeout",
+    };
   }
-
-  const approved = await api("POST", `/projects/${projectId}/confirm`, {});
-  const readyProject = await waitForProject(approved.project.id, new Set(["ready", "failed"]), READY_TIMEOUT_MS);
-  console.log(JSON.stringify(summarizeProject("after_confirm", testCase.name, readyProject), null, 2));
-  return summarizeProject("after_confirm", testCase.name, readyProject);
 }
 
 async function main() {
-  const activeCases = SMOKE_CASE ? CASES.filter((testCase) => testCase.name === SMOKE_CASE) : CASES;
+  const activeCases = SMOKE_CASE ? SMOKE_CASES.filter((testCase) => testCase.name === SMOKE_CASE) : SMOKE_CASES;
   if (!activeCases.length) {
     throw new Error(`Unknown SMOKE_CASE: ${SMOKE_CASE}`);
   }
 
   const results = [];
-
   for (const testCase of activeCases) {
     results.push(await runCase(testCase));
   }
 
   console.log(`FINAL_RESULTS=${JSON.stringify(results)}`);
-
-  const hasFailure = results.some((result) => result.status !== "ready");
+  const hasFailure = results.some((result) => result.status !== "ready" || result.previewStatus !== "ready");
   process.exitCode = hasFailure ? 1 : 0;
 }
 

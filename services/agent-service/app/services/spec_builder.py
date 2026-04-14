@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import logging
 import re
 from json import dumps
 from typing import List
@@ -27,19 +26,8 @@ USER_FACING_LANGUAGE_RULE = (
     "除非用户明确要求其他语言，所有面向用户的自然语言字段都必须使用简体中文，"
     "保留 JSON key、文件路径和代码标识符的必要格式。"
 )
-logger = logging.getLogger(__name__)
-
-
-def _should_use_heuristic_fallback(error: Exception) -> bool:
-    message = str(error)
-    markers = (
-        "模型返回了空响应",
-        "结构化输出失败",
-        "原始 JSON 回退失败",
-        "Connection error",
-        "Invalid json output",
-    )
-    return any(marker in message for marker in markers)
+PLANNER_SPEC_TIMEOUT_SECONDS = 30.0
+PLANNER_PLAN_TIMEOUT_SECONDS = 20.0
 
 DESIGN_PROFILES = {
     "sports": {
@@ -146,13 +134,14 @@ class SpecBuilder:
                     "working_spec": dumps(state.working_spec.model_dump(mode="json", by_alias=True), ensure_ascii=False),
                     "assumptions": "\n".join(state.assumptions) or "无",
                 },
+                timeout_seconds=PLANNER_SPEC_TIMEOUT_SECONDS,
+                invocation_name="planner_spec",
             )
             return self._build_app_spec_from_structured_result(state, result)
-        except GenerationFailure as exc:
-            if not _should_use_heuristic_fallback(exc):
-                raise
-            logger.warning("spec builder structured output failed, using heuristic fallback: %s", exc)
-            return self._build_fallback_spec(state)
+        except Exception as exc:
+            if isinstance(exc, GenerationFailure):
+                raise GenerationFailure(f"规格整理阶段模型调用失败：{exc}") from exc
+            raise GenerationFailure(f"规划模型在整理应用规格时失败：{exc}") from exc
 
     def build_plan(self, spec: AppSpec) -> List[PlanStep]:
         prompt = ChatPromptTemplate.from_messages(
@@ -175,16 +164,253 @@ class SpecBuilder:
                 output_schema=StructuredPlanOutput,
                 prompt=prompt,
                 payload={"spec": dumps(spec.model_dump(mode="json", by_alias=True), ensure_ascii=False)},
+                timeout_seconds=PLANNER_PLAN_TIMEOUT_SECONDS,
+                invocation_name="planner_plan",
             )
             return [
                 PlanStep(id=f"step-{index + 1}", title=step, detail=step, status="pending")
                 for index, step in enumerate(result.steps[:5])
             ]
-        except GenerationFailure as exc:
-            if not _should_use_heuristic_fallback(exc):
-                raise
-            logger.warning("plan builder structured output failed, using heuristic fallback: %s", exc)
-            return self._build_fallback_plan(spec)
+        except Exception as exc:
+            if isinstance(exc, GenerationFailure):
+                raise GenerationFailure(f"实现计划阶段模型调用失败：{exc}") from exc
+            raise GenerationFailure(f"规划模型在生成实现计划时失败：{exc}") from exc
+
+    def _build_spec_locally(self, state: AgentSessionState) -> AppSpec | None:
+        if not self._should_use_local_spec_path(state):
+            return None
+
+        transcript = self._collect_user_transcript(state)
+        working_spec = state.working_spec
+        target_users = self._normalize_string_list(working_spec.target_users or self._infer_target_users(transcript))
+        raw_screens = working_spec.screens or [ScreenSpec.model_validate(item) for item in self._infer_screens(transcript)]
+        raw_flows = working_spec.core_flows or [FlowSpec.model_validate(item) for item in self._infer_flows(transcript)]
+        raw_data_model_needs = working_spec.data_model_needs or [
+            DataModelNeed.model_validate(item) for item in self._infer_data_model_needs(transcript)
+        ]
+        screens = self._normalize_screens(raw_screens)
+        flows = self._normalize_flows(raw_flows)
+        data_model_needs = self._normalize_data_model_needs(raw_data_model_needs)
+        constraints = self._normalize_string_list(working_spec.constraints or self._infer_constraints(transcript))
+        integrations = self._normalize_string_list(working_spec.integrations or self._infer_integrations(transcript))
+        assumptions = self._normalize_string_list(working_spec.assumptions or self._infer_assumptions(transcript, constraints))
+        success_criteria = self._normalize_string_list(working_spec.success_criteria or self._infer_success_criteria(transcript))
+        title = self._coalesce_text(working_spec.title, self._infer_title(transcript), "生成的应用")
+        goal = self._coalesce_text(working_spec.goal, self._infer_goal(transcript), "构建一个符合用户需求、可直接实现的 Web 应用。")
+        summary = self._coalesce_text(
+            working_spec.summary,
+            self._infer_summary(title, target_users, screens, transcript),
+            goal,
+        )
+        brand_and_visual_direction = self._coalesce_text(
+            working_spec.brand_and_visual_direction,
+            self._infer_visual_direction(transcript),
+            "简洁现代、可直接落地的界面风格方向。",
+        )
+
+        return AppSpec(
+            appName=slugify(title, fallback="generated-app"),
+            title=title,
+            summary=summary,
+            goal=goal,
+            targetUsers=target_users,
+            screens=screens,
+            coreFlows=flows,
+            dataModelNeeds=data_model_needs,
+            integrations=integrations,
+            brandAndVisualDirection=brand_and_visual_direction,
+            designTargets=self._derive_design_targets(
+                title=title,
+                summary=summary,
+                goal=goal,
+                target_users=target_users,
+                screens=screens,
+                flows=flows,
+                brand_and_visual_direction=brand_and_visual_direction,
+            ),
+            constraints=constraints,
+            successCriteria=success_criteria,
+            assumptions=assumptions,
+        )
+
+    @staticmethod
+    def _should_use_local_spec_path(state: AgentSessionState) -> bool:
+        user_turns = sum(1 for message in state.messages if message.role.value == "user")
+        if user_turns < 2:
+            return False
+        decision = state.clarification_decision
+        return decision is None or decision.action in {"ready", "assume_ready"}
+
+    @staticmethod
+    def _collect_user_transcript(state: AgentSessionState) -> str:
+        return "\n".join(message.content.strip() for message in state.messages if message.role.value == "user" and message.content.strip())
+
+    @staticmethod
+    def _infer_title(transcript: str) -> str:
+        match = re.search(r"(面向.+?的)(.+?)(Web|网页|应用|助手|平台)", transcript)
+        if match:
+            return f"{match.group(2).strip()}{match.group(3).strip()}"
+        for keyword in ("应用", "助手", "平台", "规划"):
+            if keyword in transcript:
+                snippet = transcript.split("。", 1)[0].strip()
+                return snippet[:24]
+        return ""
+
+    @staticmethod
+    def _infer_goal(transcript: str) -> str:
+        for marker in ("核心是", "目标是", "希望", "用于", "帮助"):
+            if marker in transcript:
+                fragment = transcript.split(marker, 1)[1].split("。", 1)[0].strip("：:，, ")
+                if fragment:
+                    if marker == "帮助":
+                        return f"帮助用户{fragment}"
+                    return fragment
+        return transcript.split("。", 1)[0].strip()
+
+    @staticmethod
+    def _infer_summary(title: str, target_users: List[str], screens: List[ScreenSpec], transcript: str) -> str:
+        target = target_users[0] if target_users else "目标用户"
+        screen_count = len(screens)
+        return f"{title} 是一个面向{target}的 React + Vite Web 应用，围绕核心任务提供 {screen_count or 3} 个关键页面与清晰的使用流程。"
+
+    @staticmethod
+    def _infer_visual_direction(transcript: str) -> str:
+        for marker in ("界面希望", "风格希望", "视觉希望", "风格", "界面风格"):
+            if marker in transcript:
+                fragment = transcript.split(marker, 1)[1].split("。", 1)[0].strip("：:，, ")
+                if fragment:
+                    return fragment
+        if "偏浅色" in transcript:
+            return "专业、清晰、偏浅色"
+        return ""
+
+    @staticmethod
+    def _infer_target_users(transcript: str) -> List[str]:
+        patterns = [
+            r"面向([^，。；\n]+)",
+            r"目标用户是([^，。；\n]+)",
+            r"给([^，。；\n]+)用",
+        ]
+        results: List[str] = []
+        for pattern in patterns:
+            for match in re.findall(pattern, transcript):
+                cleaned = match.strip()
+                if cleaned:
+                    results.append(cleaned)
+        return list(dict.fromkeys(results))
+
+    @staticmethod
+    def _infer_screens(transcript: str) -> List[dict]:
+        screen_catalog = [
+            ("基础信息录入", ("基础信息", "信息录入", "录入")),
+            ("计划总览", ("计划", "12周计划", "路线图", "总览")),
+            ("每日任务", ("每日任务", "今日任务", "任务")),
+            ("打卡记录", ("打卡", "完成记录")),
+            ("每周复盘", ("复盘", "周总结")),
+            ("错题记录", ("错题", "错题本")),
+            ("资料推荐", ("资料推荐", "推荐", "资料")),
+            ("学习进度", ("进度", "统计", "仪表盘")),
+        ]
+        screens: List[dict] = []
+        for name, keywords in screen_catalog:
+            if any(keyword in transcript for keyword in keywords):
+                screens.append({"name": name, "purpose": f"用于支撑{name}的核心使用体验。", "elements": []})
+        if not screens:
+            screens = [
+                {"name": "首页", "purpose": "用于承接主要信息与主任务入口。", "elements": []},
+                {"name": "核心工作台", "purpose": "用于完成主要操作与查看结果。", "elements": []},
+                {"name": "结果页", "purpose": "用于展示生成结果与后续建议。", "elements": []},
+            ]
+        return screens[:6]
+
+    @staticmethod
+    def _infer_flows(transcript: str) -> List[dict]:
+        flows: List[dict] = []
+        if any(keyword in transcript for keyword in ("录入", "基础信息", "问卷")):
+            flows.append({"name": "录入基础信息", "steps": ["填写基础信息", "确认目标"], "success": "用户成功提交生成所需的基础信息。"})
+        if any(keyword in transcript for keyword in ("计划", "生成", "推荐")):
+            flows.append({"name": "生成个性化计划", "steps": ["分析输入条件", "输出可执行结果"], "success": "系统生成可执行的个性化方案。"})
+        if any(keyword in transcript for keyword in ("任务", "打卡", "复盘", "记录")):
+            flows.append({"name": "执行与记录进度", "steps": ["查看当日任务", "完成打卡或记录", "进入复盘"], "success": "用户可以持续执行并记录进度。"})
+        if not flows:
+            flows.append({"name": "完成主任务", "steps": ["进入应用", "完成核心操作", "查看结果"], "success": "用户完成主要目标。"})
+        return flows[:4]
+
+    @staticmethod
+    def _infer_data_model_needs(transcript: str) -> List[dict]:
+        needs: List[dict] = []
+        if any(keyword in transcript for keyword in ("用户", "考生", "学生", "游客")):
+            needs.append({"entity": "用户档案", "fields": ["姓名或昵称 (string)", "目标 (string)", "偏好设置 (string)"], "notes": "用于承接基础画像与目标。"})
+        if "计划" in transcript:
+            needs.append({"entity": "计划", "fields": ["标题 (string)", "周期 (string)", "目标说明 (string)"], "notes": "用于承接主方案或路线图。"})
+        if any(keyword in transcript for keyword in ("任务", "打卡")):
+            needs.append({"entity": "任务记录", "fields": ["任务标题 (string)", "状态 (enum)", "日期 (string)"], "notes": "用于跟踪每日执行情况。"})
+        if "复盘" in transcript:
+            needs.append({"entity": "复盘记录", "fields": ["日期 (string)", "总结 (string)", "问题点 (string)"], "notes": "用于沉淀阶段性复盘。"})
+        if "错题" in transcript:
+            needs.append({"entity": "错题条目", "fields": ["题目标题 (string)", "标签 (string)", "讲解 (string)"], "notes": "用于记录错题与解析。"})
+        return needs[:5]
+
+    @staticmethod
+    def _infer_constraints(transcript: str) -> List[str]:
+        constraints: List[str] = []
+        mapping = (
+            ("移动端", "需要兼顾移动端体验"),
+            ("网页", "首版以 Web 应用为主"),
+            ("Web", "首版以 Web 应用为主"),
+            ("模拟数据", "首版允许使用模拟数据"),
+            ("不需要登录", "首版暂不要求登录注册"),
+        )
+        for keyword, constraint in mapping:
+            if keyword in transcript:
+                constraints.append(constraint)
+        return constraints
+
+    @staticmethod
+    def _infer_integrations(transcript: str) -> List[str]:
+        integrations: List[str] = []
+        if any(keyword in transcript for keyword in ("上传图片", "图片上传", "拍照")):
+            integrations.append("图片上传")
+        if any(keyword in transcript for keyword in ("视频", "视频教学")):
+            integrations.append("视频内容展示")
+        if any(keyword in transcript for keyword in ("聊天", "AI", "问答")):
+            integrations.append("AI 对话能力")
+        return integrations
+
+    @staticmethod
+    def _infer_assumptions(transcript: str, constraints: List[str]) -> List[str]:
+        assumptions: List[str] = []
+        if any("模拟数据" in item for item in constraints):
+            assumptions.append("首版使用本地或模拟数据完成核心流程验证。")
+        if "移动端" in transcript:
+            assumptions.append("桌面端与移动端共享同一套响应式页面结构。")
+        return assumptions
+
+    @staticmethod
+    def _infer_success_criteria(transcript: str) -> List[str]:
+        criteria: List[str] = []
+        if "计划" in transcript:
+            criteria.append("用户可以在输入基础信息后获得一份可执行的完整计划。")
+        if any(keyword in transcript for keyword in ("任务", "打卡", "复盘")):
+            criteria.append("用户可以持续记录执行情况并查看阶段性反馈。")
+        if "移动端" in transcript:
+            criteria.append("核心页面在移动端也能保持可读和可操作。")
+        return criteria
+
+    def _build_plan_locally(self, spec: AppSpec) -> List[PlanStep] | None:
+        if not spec.screens and not spec.core_flows:
+            return None
+
+        focus_screen = spec.screens[0].name if spec.screens else "首页"
+        focus_flow = spec.core_flows[0].name if spec.core_flows else "主流程"
+        steps = [
+            f"搭建 {spec.title} 的整体应用骨架、路由结构和基础样式变量",
+            f"实现 {focus_screen} 及关键页面区块，先把主要信息层级和交互入口建立起来",
+            f"串联 {focus_flow} 等核心流程，补齐表单、状态与主要结果展示",
+            "加入示例数据、必要校验和关键反馈，让主路径可以完整跑通",
+            "完成响应式细节、视觉润色和构建前自检，确保可以进入审批和执行阶段",
+        ]
+        return [PlanStep(id=f"step-{index + 1}", title=step, detail=step, status="pending") for index, step in enumerate(steps)]
 
     def _build_app_spec_from_structured_result(self, state: AgentSessionState, result: StructuredSpecOutput) -> AppSpec:
         working_spec = state.working_spec
@@ -236,82 +462,17 @@ class SpecBuilder:
             assumptions=self._normalize_string_list(result.assumptions),
         )
 
-    def _build_fallback_spec(self, state: AgentSessionState) -> AppSpec:
-        working_spec = state.working_spec
-        title = self._coalesce_text(working_spec.title, working_spec.goal, "生成的应用")
-        summary = self._coalesce_text(
-            working_spec.summary,
-            working_spec.goal,
-            "根据最新对话整理出的可实施 Web 应用方案。",
-        )
-        goal = self._coalesce_text(
-            working_spec.goal,
-            working_spec.summary,
-            state.messages[-1].content if state.messages else None,
-            "构建一个符合用户需求、可直接实现的 Web 应用。",
-        )
-        target_users = self._normalize_string_list(working_spec.target_users)
-        screens = self._normalize_screens(working_spec.screens)
-        flows = self._normalize_flows(working_spec.core_flows) or self._fallback_flows_from_screens(screens)
-        brand_and_visual_direction = self._coalesce_text(
-            working_spec.brand_and_visual_direction,
-            "简洁现代、可直接落地的界面风格方向。",
-        )
-        assumptions = self._normalize_string_list(working_spec.assumptions + ["规格整理阶段使用了本地兜底推断。"])
-        return AppSpec(
-            appName=slugify(self._coalesce_text(working_spec.title, working_spec.goal, "generated-app"), fallback="generated-app"),
-            title=title,
-            summary=summary,
-            goal=goal,
-            targetUsers=target_users,
-            screens=screens or self._normalize_screens([ScreenSpec(name="首页"), ScreenSpec(name="核心功能页")]),
-            coreFlows=flows,
-            dataModelNeeds=self._normalize_data_model_needs(working_spec.data_model_needs),
-            integrations=self._normalize_string_list(working_spec.integrations),
-            brandAndVisualDirection=brand_and_visual_direction,
-            designTargets=self._derive_design_targets(
-                title=title,
-                summary=summary,
-                goal=goal,
-                target_users=target_users,
-                screens=screens or self._normalize_screens([ScreenSpec(name="首页"), ScreenSpec(name="核心功能页")]),
-                flows=flows,
-                brand_and_visual_direction=brand_and_visual_direction,
-            ),
-            constraints=self._normalize_string_list(working_spec.constraints),
-            successCriteria=self._normalize_string_list(working_spec.success_criteria) or ["用户可以顺利完成一次核心学习流程"],
-            assumptions=assumptions,
-        )
-
-    @staticmethod
-    def _build_fallback_plan(spec: AppSpec) -> List[PlanStep]:
-        screen_names = [screen.name for screen in spec.screens[:3]]
-        focus = "、".join(screen_names) if screen_names else "核心页面"
-        steps = [
-            f"初始化 {spec.title} 的 React + Vite 页面骨架与全局样式基线。",
-            f"完成 {focus} 的主界面布局与核心信息分区。",
-            "补齐关键交互、示例数据状态和主要组件的可视反馈。",
-            "整理路由、状态管理与必要的数据模型展示逻辑。",
-            "执行构建校验并修复可见问题，确保可以进入审批与预览。",
-        ]
-        return [PlanStep(id=f"step-{index + 1}", title=step, detail=step, status="pending") for index, step in enumerate(steps)]
-
-    def _fallback_flows_from_screens(self, screens: List[ScreenSpec]) -> List[FlowSpec]:
-        if not screens:
-            return []
-        first_screen = screens[0].name
-        return [
-            FlowSpec(
-                id="flow-primary",
-                name=f"{first_screen}核心流程",
-                steps=[f"进入{first_screen}", "浏览关键内容", "完成主要操作"],
-                success="用户可以顺利完成一次核心任务。",
-            )
-        ]
-
-    def _invoke_structured(self, role: str, output_schema, prompt: ChatPromptTemplate, payload: dict):
+    def _invoke_structured(
+        self,
+        role: str,
+        output_schema,
+        prompt: ChatPromptTemplate,
+        payload: dict,
+        timeout_seconds: float,
+        invocation_name: str,
+    ):
         try:
-            model = self.provider.require_chat_model(role)  # type: ignore[arg-type]
+            model = self.provider.require_chat_model(role, timeout_seconds=timeout_seconds)  # type: ignore[arg-type]
             messages = prompt.format_messages(**payload)
             repair_focus = (
                 "重点修正 screens、coreFlows、dataModelNeeds 的对象结构，"
@@ -322,6 +483,9 @@ class SpecBuilder:
                 messages=messages,
                 output_schema=output_schema,
                 repair_focus=repair_focus,
+                structured_output_method=self.provider.preferred_structured_output_method(role),
+                timeout_seconds=timeout_seconds,
+                invocation_name=invocation_name,
             )
         except Exception as exc:
             if isinstance(exc, GenerationFailure):
