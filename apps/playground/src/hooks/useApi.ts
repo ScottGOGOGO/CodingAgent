@@ -1,5 +1,16 @@
 const API_BASE = import.meta.env.VITE_API_BASE ?? "http://127.0.0.1:4000";
 
+export class ApiError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly responseText: string,
+  ) {
+    super(message);
+    this.name = "ApiError";
+  }
+}
+
 export function getApiBase() {
   return API_BASE;
 }
@@ -17,15 +28,16 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
 
   if (!response.ok) {
     const text = await response.text();
+    let message = `Request failed with ${response.status}`;
     if (text) {
       try {
         const parsed = JSON.parse(text) as { error?: string; message?: string };
-        throw new Error(parsed.error || parsed.message || text);
+        message = parsed.error || parsed.message || text;
       } catch {
-        throw new Error(text);
+        message = text;
       }
     }
-    throw new Error(`Request failed with ${response.status}`);
+    throw new ApiError(message, response.status, text);
   }
 
   return (await response.json()) as T;

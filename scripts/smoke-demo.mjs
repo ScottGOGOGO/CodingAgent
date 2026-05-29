@@ -20,11 +20,11 @@ async function completeClarification(projectId, initialProject, testCase) {
   let currentProject = initialProject;
 
   for (let round = 1; round <= MAX_CLARIFICATION_ROUNDS; round += 1) {
-    if (currentProject.status !== "clarifying") {
+    if (currentProject.status !== "awaiting_input") {
       return currentProject;
     }
 
-    const questions = currentProject.session?.clarificationDecision?.questions ?? [];
+    const questions = currentProject.session?.clarificationRequest?.questions ?? [];
     const clarificationAnswers = buildClarificationAnswers(questions);
     if (!clarificationAnswers.length) {
       throw new Error(`Clarifying project ${projectId} returned no questions to answer.`);
@@ -48,7 +48,7 @@ async function completeClarification(projectId, initialProject, testCase) {
 
     currentProject = await waitForProject(
       projectId,
-      new Set(["clarifying", "awaiting_approval", "failed"]),
+      new Set(["awaiting_input", "awaiting_approval", "failed"]),
       TURN_TIMEOUT_MS,
     );
 
@@ -76,7 +76,7 @@ async function runCase(testCase) {
 
     const initialProject = await waitForProject(
       projectId,
-      new Set(["awaiting_approval", "failed", "clarifying"]),
+      new Set(["awaiting_approval", "failed", "awaiting_input"]),
       TURN_TIMEOUT_MS,
     );
     console.log(JSON.stringify(summarizeProject("after_turn", testCase.name, initialProject), null, 2));
@@ -89,7 +89,7 @@ async function runCase(testCase) {
     }
 
     const approvalProject =
-      initialProject.status === "clarifying"
+      initialProject.status === "awaiting_input"
         ? await completeClarification(projectId, initialProject, testCase)
         : initialProject;
 

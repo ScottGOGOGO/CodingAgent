@@ -6,5 +6,6 @@ export default defineConfig({
   server: {
     host: "0.0.0.0",
     port: Number(process.env.PLAYGROUND_PORT ?? "5173"),
+    strictPort: true,
   },
 });

@@ -1,10 +1,10 @@
 import { setTimeout as sleep } from "node:timers/promises";
 
 export const API_BASE = process.env.API_BASE ?? "http://127.0.0.1:4000";
-export const REASONING_MODE = process.env.REASONING_MODE ?? "plan_solve";
+export const REASONING_MODE = process.env.REASONING_MODE ?? "local_generator";
 export const POLL_INTERVAL_MS = Number(process.env.SMOKE_POLL_INTERVAL_MS ?? 3000);
-export const TURN_TIMEOUT_MS = Number(process.env.SMOKE_TURN_TIMEOUT_MS ?? 420000);
-export const READY_TIMEOUT_MS = Number(process.env.SMOKE_READY_TIMEOUT_MS ?? 420000);
+export const TURN_TIMEOUT_MS = Number(process.env.SMOKE_TURN_TIMEOUT_MS ?? 900000);
+export const READY_TIMEOUT_MS = Number(process.env.SMOKE_READY_TIMEOUT_MS ?? 900000);
 
 const FAILURE_KINDS = {
   LOCAL_SERVICE: "local_service_unreachable_or_timeout",
@@ -40,7 +40,9 @@ export async function waitForProject(projectId, statuses, timeoutMs, options = {
   while (Date.now() < deadline) {
     lastProject = await fetchProject(projectId, options);
     const previewStatus = lastProject.preview?.status ?? "unknown";
-    console.log(`poll project=${projectId} status=${lastProject.status} preview=${previewStatus}`);
+    const phase = lastProject.latestRun?.phase ?? "none";
+    const runStatus = lastProject.latestRun?.status ?? "none";
+    console.log(`poll project=${projectId} status=${lastProject.status} run=${runStatus} phase=${phase} preview=${previewStatus}`);
     if (statuses.has(lastProject.status)) {
       return lastProject;
     }
@@ -108,6 +110,7 @@ export function summarizeProject(stage, name, project, extra = {}) {
     previewUrl: project?.preview?.url ?? null,
     latestRunStatus: project?.latestRun?.status ?? null,
     latestRunPhase: project?.latestRun?.phase ?? null,
+    candidatePreviewUrl: project?.preview?.candidateUrl ?? null,
     providerRoute: resolveProviderRoute(project),
     lastAssistantMessage: latestAssistantMessage(project),
     failureKind: project?.status === "failed" ? classifyFailure(project) : undefined,

@@ -12,9 +12,9 @@ import {
 } from "../../scripts/smoke-common.mjs";
 
 const STATUS_LABELS = {
-  clarifying: "Needs details",
-  awaiting_approval: "Awaiting approval",
-  ready: "Preview live",
+  awaiting_input: "Needs input",
+  awaiting_approval: "Candidate ready",
+  ready: "Live",
 };
 
 const MAX_CLARIFICATION_ROUNDS = Number(process.env.SMOKE_MAX_CLARIFICATION_ROUNDS ?? 2);
@@ -144,19 +144,19 @@ async function completeClarification(page, request, projectId, project, caseName
   let currentProject = project;
 
   for (let round = 1; round <= MAX_CLARIFICATION_ROUNDS; round += 1) {
-    if (currentProject.status !== "clarifying") {
+    if (currentProject.status !== "awaiting_input") {
       return currentProject;
     }
 
-    const questions = currentProject.session?.clarificationDecision?.questions ?? [];
+    const questions = currentProject.session?.clarificationRequest?.questions ?? [];
     const replyText = buildClarificationReplyText(questions);
-    await expectUiStatus(page, STATUS_LABELS.clarifying);
+    await expectUiStatus(page, STATUS_LABELS.awaiting_input);
     await sendComposerMessage(page, replyText);
 
     currentProject = await waitForProjectStatus(
       request,
       projectId,
-      new Set(["clarifying", "awaiting_approval", "failed"]),
+      new Set(["awaiting_input", "awaiting_approval", "failed"]),
       TURN_TIMEOUT_MS,
     );
     console.log(
@@ -184,7 +184,7 @@ async function runSmokeCase(page, request, testInfo, testCase) {
     const initialProject = await waitForProjectStatus(
       request,
       projectId,
-      new Set(["clarifying", "awaiting_approval", "failed"]),
+      new Set(["awaiting_input", "awaiting_approval", "failed"]),
       TURN_TIMEOUT_MS,
     );
     console.log(JSON.stringify(summarizeProject("ui_after_turn", testCase.name, initialProject), null, 2));
@@ -196,7 +196,7 @@ async function runSmokeCase(page, request, testInfo, testCase) {
     }
 
     let approvalProject =
-      initialProject.status === "clarifying"
+      initialProject.status === "awaiting_input"
         ? await completeClarification(page, request, projectId, initialProject, testCase.name)
         : initialProject;
 
@@ -205,7 +205,7 @@ async function runSmokeCase(page, request, testInfo, testCase) {
     }
 
     await expectUiStatus(page, STATUS_LABELS.awaiting_approval);
-    await expect(page.getByTestId("composer-send")).toHaveText("Confirm");
+    await expect(page.getByTestId("composer-send")).toHaveText("Approve candidate");
     await expect(page.getByTestId("composer-send")).toBeEnabled();
     await page.getByTestId("composer-send").click();
 
