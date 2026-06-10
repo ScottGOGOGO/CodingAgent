@@ -1,16 +1,19 @@
 #!/usr/bin/env node
 
-import { buildClarificationAnswers, SMOKE_CASES } from "./smoke-cases.mjs";
+import { buildClarificationAnswers, SMOKE_CASES, STRICT_FIVE_ROUND_CASES } from "./smoke-cases.mjs";
 import {
   api,
   assertProjectReady,
+  assertStrictProject,
   classifyFailure,
   fetchProject,
   READY_TIMEOUT_MS,
   REASONING_MODE,
   summarizeProject,
+  STRICT_SMOKE,
   TURN_TIMEOUT_MS,
   waitForProject,
+  isPassingSmokeResult,
 } from "./smoke-common.mjs";
 
 const SMOKE_CASE = process.env.SMOKE_CASE?.trim();
@@ -20,11 +23,11 @@ async function completeClarification(projectId, initialProject, testCase) {
   let currentProject = initialProject;
 
   for (let round = 1; round <= MAX_CLARIFICATION_ROUNDS; round += 1) {
-    if (currentProject.status !== "clarifying") {
+    if (currentProject.status !== "awaiting_input") {
       return currentProject;
     }
 
-    const questions = currentProject.session?.clarificationDecision?.questions ?? [];
+    const questions = currentProject.session?.clarificationRequest?.questions ?? [];
     const clarificationAnswers = buildClarificationAnswers(questions);
     if (!clarificationAnswers.length) {
       throw new Error(`Clarifying project ${projectId} returned no questions to answer.`);
@@ -48,7 +51,7 @@ async function completeClarification(projectId, initialProject, testCase) {
 
     currentProject = await waitForProject(
       projectId,
-      new Set(["clarifying", "awaiting_approval", "failed"]),
+      new Set(["awaiting_input", "awaiting_approval", "failed"]),
       TURN_TIMEOUT_MS,
     );
 
@@ -76,7 +79,7 @@ async function runCase(testCase) {
 
     const initialProject = await waitForProject(
       projectId,
-      new Set(["awaiting_approval", "failed", "clarifying"]),
+      new Set(["awaiting_approval", "failed", "awaiting_input"]),
       TURN_TIMEOUT_MS,
     );
     console.log(JSON.stringify(summarizeProject("after_turn", testCase.name, initialProject), null, 2));
@@ -89,7 +92,7 @@ async function runCase(testCase) {
     }
 
     const approvalProject =
-      initialProject.status === "clarifying"
+      initialProject.status === "awaiting_input"
         ? await completeClarification(projectId, initialProject, testCase)
         : initialProject;
 
@@ -107,6 +110,7 @@ async function runCase(testCase) {
       READY_TIMEOUT_MS,
     );
     assertProjectReady(readyProject, testCase.name);
+    assertStrictProject(readyProject, testCase.name);
     console.log(JSON.stringify(summarizeProject("after_confirm", testCase.name, readyProject), null, 2));
     return summarizeProject("after_confirm", testCase.name, readyProject);
   } catch (error) {
@@ -137,18 +141,25 @@ async function runCase(testCase) {
 }
 
 async function main() {
-  const activeCases = SMOKE_CASE ? SMOKE_CASES.filter((testCase) => testCase.name === SMOKE_CASE) : SMOKE_CASES;
+  const sourceCases = STRICT_SMOKE ? STRICT_FIVE_ROUND_CASES : SMOKE_CASES;
+  const activeCases = SMOKE_CASE ? sourceCases.filter((testCase) => testCase.name === SMOKE_CASE || testCase.baseName === SMOKE_CASE) : sourceCases;
   if (!activeCases.length) {
     throw new Error(`Unknown SMOKE_CASE: ${SMOKE_CASE}`);
   }
 
   const results = [];
   for (const testCase of activeCases) {
-    results.push(await runCase(testCase));
+    const result = await runCase(testCase);
+    results.push(result);
+    if (STRICT_SMOKE && !isPassingSmokeResult(result)) {
+      console.log(`FINAL_RESULTS=${JSON.stringify(results)}`);
+      process.exitCode = 1;
+      return;
+    }
   }
 
   console.log(`FINAL_RESULTS=${JSON.stringify(results)}`);
-  const hasFailure = results.some((result) => result.status !== "ready" || result.previewStatus !== "ready");
+  const hasFailure = results.some((result) => !isPassingSmokeResult(result));
   process.exitCode = hasFailure ? 1 : 0;
 }
 

@@ -1,34 +1,23 @@
 import { Pool } from "pg";
 
-import type {
-  ApprovalRequest,
-  PreviewInstanceRecord,
-  ProjectRecord,
-  RunRecord,
-  SessionRecord,
-  UsageMetrics,
-  VersionRecord,
-} from "@vide/contracts";
+import type { CandidateChangeSet, ProjectRecord, RunRecord, SessionState, VersionRecord } from "@vide/contracts";
 
 export interface ProjectStore {
   createProject(project: ProjectRecord): Promise<void>;
   getProject(projectId: string): Promise<ProjectRecord | null>;
   saveProject(project: ProjectRecord): Promise<void>;
   listProjects(): Promise<ProjectRecord[]>;
-  createSession(session: SessionRecord): Promise<void>;
-  getSession(sessionId: string): Promise<SessionRecord | null>;
-  saveSession(session: SessionRecord): Promise<void>;
-  listSessions(projectId: string): Promise<SessionRecord[]>;
+  createSession(session: SessionState): Promise<void>;
+  getSession(sessionId: string): Promise<SessionState | null>;
+  saveSession(session: SessionState): Promise<void>;
   createRun(run: RunRecord): Promise<void>;
   getRun(runId: string): Promise<RunRecord | null>;
   saveRun(run: RunRecord): Promise<void>;
   listRuns(projectId: string): Promise<RunRecord[]>;
-  saveApproval(approval: ApprovalRequest): Promise<void>;
+  saveCandidate(candidate: CandidateChangeSet): Promise<void>;
+  getCandidate(runId: string): Promise<CandidateChangeSet | null>;
   saveVersion(projectId: string, version: VersionRecord): Promise<void>;
   listVersions(projectId: string): Promise<VersionRecord[]>;
-  savePreviewInstance(instance: PreviewInstanceRecord): Promise<void>;
-  saveUsageMetrics(runId: string, usage: UsageMetrics): Promise<void>;
-  getUsageMetrics(runId: string): Promise<UsageMetrics | null>;
 }
 
 function clone<T>(value: T): T {
@@ -37,12 +26,10 @@ function clone<T>(value: T): T {
 
 export class MemoryProjectStore implements ProjectStore {
   private readonly projects = new Map<string, ProjectRecord>();
-  private readonly sessions = new Map<string, SessionRecord>();
+  private readonly sessions = new Map<string, SessionState>();
   private readonly runs = new Map<string, RunRecord>();
-  private readonly approvals = new Map<string, ApprovalRequest>();
+  private readonly candidates = new Map<string, CandidateChangeSet>();
   private readonly versions = new Map<string, VersionRecord[]>();
-  private readonly previewInstances = new Map<string, PreviewInstanceRecord[]>();
-  private readonly usageMetrics = new Map<string, UsageMetrics>();
 
   async createProject(project: ProjectRecord): Promise<void> {
     this.projects.set(project.id, clone(project));
@@ -58,24 +45,20 @@ export class MemoryProjectStore implements ProjectStore {
   }
 
   async listProjects(): Promise<ProjectRecord[]> {
-    return [...this.projects.values()].map((item) => clone(item));
+    return [...this.projects.values()].map((project) => clone(project));
   }
 
-  async createSession(session: SessionRecord): Promise<void> {
+  async createSession(session: SessionState): Promise<void> {
     this.sessions.set(session.id, clone(session));
   }
 
-  async getSession(sessionId: string): Promise<SessionRecord | null> {
+  async getSession(sessionId: string): Promise<SessionState | null> {
     const session = this.sessions.get(sessionId);
     return session ? clone(session) : null;
   }
 
-  async saveSession(session: SessionRecord): Promise<void> {
+  async saveSession(session: SessionState): Promise<void> {
     this.sessions.set(session.id, clone(session));
-  }
-
-  async listSessions(projectId: string): Promise<SessionRecord[]> {
-    return [...this.sessions.values()].filter((item) => item.projectId === projectId).map((item) => clone(item));
   }
 
   async createRun(run: RunRecord): Promise<void> {
@@ -93,41 +76,27 @@ export class MemoryProjectStore implements ProjectStore {
 
   async listRuns(projectId: string): Promise<RunRecord[]> {
     return [...this.runs.values()]
-      .filter((item) => item.projectId === projectId)
+      .filter((run) => run.projectId === projectId)
       .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
-      .map((item) => clone(item));
+      .map((run) => clone(run));
   }
 
-  async saveApproval(approval: ApprovalRequest): Promise<void> {
-    this.approvals.set(approval.runId, clone(approval));
+  async saveCandidate(candidate: CandidateChangeSet): Promise<void> {
+    this.candidates.set(candidate.runId, clone(candidate));
+  }
+
+  async getCandidate(runId: string): Promise<CandidateChangeSet | null> {
+    const candidate = this.candidates.get(runId);
+    return candidate ? clone(candidate) : null;
   }
 
   async saveVersion(projectId: string, version: VersionRecord): Promise<void> {
-    const current = this.versions.get(projectId) ?? [];
-    const next = current.filter((item) => item.id !== version.id);
-    next.push(clone(version));
-    this.versions.set(projectId, next.sort((left, right) => left.number - right.number));
+    const versions = this.versions.get(projectId) ?? [];
+    this.versions.set(projectId, [...versions.filter((item) => item.id !== version.id), clone(version)]);
   }
 
   async listVersions(projectId: string): Promise<VersionRecord[]> {
-    return (this.versions.get(projectId) ?? []).map((item) => clone(item));
-  }
-
-  async savePreviewInstance(instance: PreviewInstanceRecord): Promise<void> {
-    const current = this.previewInstances.get(instance.projectId) ?? [];
-    this.previewInstances.set(
-      instance.projectId,
-      [...current.filter((item) => item.id !== instance.id), clone(instance)],
-    );
-  }
-
-  async saveUsageMetrics(runId: string, usage: UsageMetrics): Promise<void> {
-    this.usageMetrics.set(runId, clone(usage));
-  }
-
-  async getUsageMetrics(runId: string): Promise<UsageMetrics | null> {
-    const usage = this.usageMetrics.get(runId);
-    return usage ? clone(usage) : null;
+    return (this.versions.get(projectId) ?? []).map((version) => clone(version));
   }
 }
 
@@ -136,73 +105,25 @@ export class PostgresProjectStore implements ProjectStore {
 
   async initialize(): Promise<void> {
     await this.pool.query(`
-      CREATE TABLE IF NOT EXISTS projects (
-        id TEXT PRIMARY KEY,
-        project_id TEXT NOT NULL,
-        payload JSONB NOT NULL,
-        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-      );
-      CREATE TABLE IF NOT EXISTS sessions (
-        id TEXT PRIMARY KEY,
-        project_id TEXT NOT NULL,
-        payload JSONB NOT NULL,
-        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-      );
-      CREATE TABLE IF NOT EXISTS runs (
-        id TEXT PRIMARY KEY,
-        project_id TEXT NOT NULL,
-        session_id TEXT NOT NULL,
-        payload JSONB NOT NULL,
-        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-      );
-      CREATE TABLE IF NOT EXISTS approvals (
-        id TEXT PRIMARY KEY,
-        project_id TEXT NOT NULL,
-        run_id TEXT NOT NULL UNIQUE,
-        payload JSONB NOT NULL,
-        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-      );
-      CREATE TABLE IF NOT EXISTS versions (
-        id TEXT PRIMARY KEY,
-        project_id TEXT NOT NULL,
-        payload JSONB NOT NULL,
-        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-      );
-      CREATE TABLE IF NOT EXISTS preview_instances (
-        id TEXT PRIMARY KEY,
-        project_id TEXT NOT NULL,
-        run_id TEXT NOT NULL,
-        payload JSONB NOT NULL,
-        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-      );
-      CREATE TABLE IF NOT EXISTS usage_metrics (
-        run_id TEXT PRIMARY KEY,
-        project_id TEXT NOT NULL,
-        payload JSONB NOT NULL,
-        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-      );
+      CREATE TABLE IF NOT EXISTS projects (id TEXT PRIMARY KEY, payload JSONB NOT NULL, updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW());
+      CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY, project_id TEXT NOT NULL, payload JSONB NOT NULL, updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW());
+      CREATE TABLE IF NOT EXISTS runs (id TEXT PRIMARY KEY, project_id TEXT NOT NULL, session_id TEXT NOT NULL, payload JSONB NOT NULL, updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW());
+      CREATE TABLE IF NOT EXISTS candidates (run_id TEXT PRIMARY KEY, project_id TEXT NOT NULL, payload JSONB NOT NULL, updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW());
+      CREATE TABLE IF NOT EXISTS versions (id TEXT PRIMARY KEY, project_id TEXT NOT NULL, payload JSONB NOT NULL, updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW());
     `);
   }
 
-  private async upsert(
-    table: string,
-    idColumn: string,
-    idValue: string,
-    projectId: string,
-    payload: unknown,
-    extra: Record<string, string> = {},
-  ): Promise<void> {
+  private async upsert(table: string, idColumn: string, idValue: string, projectId: string, payload: unknown, extra: Record<string, string> = {}) {
     const columns = [idColumn, "project_id", ...Object.keys(extra), "payload", "updated_at"];
     const values = [idValue, projectId, ...Object.values(extra), JSON.stringify(payload)];
-    const placeholders = columns.map((_, index) => `$${index + 1}`);
-    const updateColumns = [...columns.filter((column) => column !== idColumn && column !== "updated_at"), "updated_at"];
-    const updateStatement = updateColumns
+    const placeholders = columns.slice(0, -1).map((_, index) => `$${index + 1}`).join(", ");
+    const updateColumns = columns
+      .filter((column) => column !== idColumn)
       .map((column) => (column === "updated_at" ? "updated_at = NOW()" : `${column} = EXCLUDED.${column}`))
       .join(", ");
     await this.pool.query(
-      `INSERT INTO ${table} (${columns.join(", ")})
-       VALUES (${placeholders.slice(0, columns.length - 1).join(", ")}, NOW())
-       ON CONFLICT (${idColumn}) DO UPDATE SET ${updateStatement}`,
+      `INSERT INTO ${table} (${columns.join(", ")}) VALUES (${placeholders}, NOW())
+       ON CONFLICT (${idColumn}) DO UPDATE SET ${updateColumns}`,
       values,
     );
   }
@@ -233,23 +154,16 @@ export class PostgresProjectStore implements ProjectStore {
     return this.readMany<ProjectRecord>("SELECT payload FROM projects ORDER BY updated_at DESC", []);
   }
 
-  async createSession(session: SessionRecord): Promise<void> {
+  async createSession(session: SessionState): Promise<void> {
     await this.saveSession(session);
   }
 
-  async getSession(sessionId: string): Promise<SessionRecord | null> {
-    return this.readOne<SessionRecord>("SELECT payload FROM sessions WHERE id = $1", [sessionId]);
+  async getSession(sessionId: string): Promise<SessionState | null> {
+    return this.readOne<SessionState>("SELECT payload FROM sessions WHERE id = $1", [sessionId]);
   }
 
-  async saveSession(session: SessionRecord): Promise<void> {
+  async saveSession(session: SessionState): Promise<void> {
     await this.upsert("sessions", "id", session.id, session.projectId, session);
-  }
-
-  async listSessions(projectId: string): Promise<SessionRecord[]> {
-    return this.readMany<SessionRecord>(
-      "SELECT payload FROM sessions WHERE project_id = $1 ORDER BY updated_at DESC",
-      [projectId],
-    );
   }
 
   async createRun(run: RunRecord): Promise<void> {
@@ -268,8 +182,12 @@ export class PostgresProjectStore implements ProjectStore {
     return this.readMany<RunRecord>("SELECT payload FROM runs WHERE project_id = $1 ORDER BY updated_at DESC", [projectId]);
   }
 
-  async saveApproval(approval: ApprovalRequest): Promise<void> {
-    await this.upsert("approvals", "id", approval.runId, approval.projectId, approval, { run_id: approval.runId });
+  async saveCandidate(candidate: CandidateChangeSet): Promise<void> {
+    await this.upsert("candidates", "run_id", candidate.runId, "", candidate);
+  }
+
+  async getCandidate(runId: string): Promise<CandidateChangeSet | null> {
+    return this.readOne<CandidateChangeSet>("SELECT payload FROM candidates WHERE run_id = $1", [runId]);
   }
 
   async saveVersion(projectId: string, version: VersionRecord): Promise<void> {
@@ -277,22 +195,7 @@ export class PostgresProjectStore implements ProjectStore {
   }
 
   async listVersions(projectId: string): Promise<VersionRecord[]> {
-    return this.readMany<VersionRecord>(
-      "SELECT payload FROM versions WHERE project_id = $1 ORDER BY updated_at ASC",
-      [projectId],
-    );
-  }
-
-  async savePreviewInstance(instance: PreviewInstanceRecord): Promise<void> {
-    await this.upsert("preview_instances", "id", instance.id, instance.projectId, instance, { run_id: instance.runId });
-  }
-
-  async saveUsageMetrics(runId: string, usage: UsageMetrics): Promise<void> {
-    await this.upsert("usage_metrics", "run_id", runId, "", usage);
-  }
-
-  async getUsageMetrics(runId: string): Promise<UsageMetrics | null> {
-    return this.readOne<UsageMetrics>("SELECT payload FROM usage_metrics WHERE run_id = $1", [runId]);
+    return this.readMany<VersionRecord>("SELECT payload FROM versions WHERE project_id = $1 ORDER BY updated_at ASC", [projectId]);
   }
 }
 
@@ -301,13 +204,12 @@ export async function createProjectStore(databaseUrl?: string): Promise<ProjectS
     return new MemoryProjectStore();
   }
 
+  const store = new PostgresProjectStore(new Pool({ connectionString: databaseUrl }));
   try {
-    const pool = new Pool({ connectionString: databaseUrl });
-    const store = new PostgresProjectStore(pool);
     await store.initialize();
     return store;
   } catch (error) {
-    console.warn("Falling back to memory store because PostgreSQL initialization failed.", error);
+    console.warn("Postgres store unavailable; falling back to in-memory store.", error);
     return new MemoryProjectStore();
   }
 }

@@ -3,16 +3,12 @@ import { mkdir } from "node:fs/promises";
 import cors from "@fastify/cors";
 import Fastify from "fastify";
 
-import { AgentClient } from "./agent-client.js";
 import { loadConfig } from "./config.js";
 import { ProjectEventBus } from "./events.js";
 import { registerProjectRoutes } from "./routes/projects.js";
 import { registerV2Routes } from "./routes/v2.js";
 import { RunnerService } from "./runner.js";
-import { ExecutionPipeline } from "./services/execution-pipeline.js";
-import { ExecutionWorker } from "./services/execution-worker.js";
 import { ProjectService } from "./services/project-service.js";
-import { ProposalValidator } from "./services/proposal-validator.js";
 import { RunService } from "./services/run-service.js";
 import { createProjectStore } from "./store.js";
 import { WorkspaceService } from "./workspace.js";
@@ -22,25 +18,20 @@ const app = Fastify({ logger: true });
 const bus = new ProjectEventBus();
 const workspace = new WorkspaceService();
 const runner = new RunnerService(config.runnerStrategy);
-const agentClient = new AgentClient(config.agentServiceUrl, config.agentServiceTimeoutMs);
 const store = await createProjectStore(config.databaseUrl);
 
-const pipeline = new ExecutionPipeline(runner, workspace, agentClient, store, bus);
-const worker = new ExecutionWorker(store, bus, pipeline);
-const proposalValidator = new ProposalValidator(workspace);
-const runService = new RunService(store, bus, workspace, agentClient, worker, proposalValidator);
+const runService = new RunService(store, bus, workspace, runner);
 const projectService = new ProjectService(config, store, bus, workspace, runService);
 
 await mkdir(config.projectsRoot, { recursive: true });
 await app.register(cors, { origin: true });
 
-registerProjectRoutes(app, projectService, bus);
-registerV2Routes(app, projectService, runService);
+registerProjectRoutes(app, projectService, runService, bus);
+registerV2Routes(app, runService);
 
 async function shutdown() {
   app.log.info("Shutting down...");
   await runner.stopAll();
-  await agentClient.close();
   await app.close();
 }
 

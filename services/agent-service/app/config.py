@@ -37,6 +37,18 @@ class Settings(BaseSettings):
     openai_api_key: Optional[str] = Field(default=None, alias="OPENAI_API_KEY")
     openai_base_url: Optional[str] = Field(default="https://api.openai.com/v1", alias="OPENAI_BASE_URL")
     openai_model: Optional[str] = Field(default=None, alias="OPENAI_MODEL")
+    deepseek_api_key: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("DEEPSEEK_API_KEY", "Deepseek_API_KEY"),
+    )
+    deepseek_base_url: Optional[str] = Field(
+        default="https://api.deepseek.com",
+        validation_alias=AliasChoices("DEEPSEEK_BASE_URL", "Deepseek_BASE_URL"),
+    )
+    deepseek_model: Optional[str] = Field(
+        default="deepseek-v4-flash",
+        validation_alias=AliasChoices("DEEPSEEK_MODEL", "Deepseek_MODEL"),
+    )
     gemini_api_key: Optional[str] = Field(default=None, alias="GEMINI_API_KEY")
     gemini_base_url: Optional[str] = Field(default=None, alias="GEMINI_BASE_URL")
     gemini_model: Optional[str] = Field(default=None, alias="GEMINI_MODEL")
@@ -77,6 +89,8 @@ class Settings(BaseSettings):
             return self.qwen_api_key, self.qwen_base_url, self.qwen_model
         if normalized == "openai":
             return self.openai_api_key, self.openai_base_url, self.openai_model
+        if normalized == "deepseek":
+            return self.deepseek_api_key, self.deepseek_base_url, self.deepseek_model
         if normalized == "gemini":
             return self.gemini_api_key, self.gemini_base_url, self.gemini_model
         if normalized == "claude":
@@ -92,12 +106,12 @@ class Settings(BaseSettings):
         if self.model_api_key or self.model_base_url or self.model_name:
             return "openai_compatible"
 
-        for candidate in ("openai", "qwen", "gemini", "claude"):
+        for candidate in ("openai", "qwen", "deepseek", "gemini", "claude"):
             api_key, base_url, model_name = self._provider_credentials(candidate)
             if api_key and model_name:
                 return candidate
 
-        for candidate in ("openai", "qwen", "gemini", "claude"):
+        for candidate in ("openai", "qwen", "deepseek", "gemini", "claude"):
             api_key, base_url, model_name = self._provider_credentials(candidate)
             if api_key or base_url or model_name:
                 return candidate

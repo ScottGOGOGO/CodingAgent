@@ -13,23 +13,23 @@ def make_complete_state(**overrides) -> AgentSessionState:
                 "type": "write",
                 "path": "package.json",
                 "summary": "Write package",
-                "content": "{\"name\":\"demo\",\"dependencies\":{\"react\":\"^18.3.1\",\"react-dom\":\"^18.3.1\"},\"devDependencies\":{\"vite\":\"^5.4.5\"}}\n",
+                "content": "{\"name\":\"demo\",\"scripts\":{\"dev\":\"next dev\",\"build\":\"next build\"},\"dependencies\":{\"next\":\"^14.2.25\",\"react\":\"^18.3.1\",\"react-dom\":\"^18.3.1\"}}\n",
             },
             {
                 "type": "write",
-                "path": "index.html",
-                "summary": "Write html",
-                "content": "<!doctype html><html><body><div id='root'></div></body></html>\n",
+                "path": "src/app/layout.tsx",
+                "summary": "Write root layout",
+                "content": "import './globals.css';\nexport default function RootLayout({ children }: { children: React.ReactNode }) { return <html lang=\"zh-CN\"><body>{children}</body></html>; }\n",
             },
             {
                 "type": "write",
-                "path": "src/main.tsx",
-                "summary": "Write main entry",
-                "content": "import ReactDOM from 'react-dom/client';\nimport App from './App';\nReactDOM.createRoot(document.getElementById('root')!).render(<App />);\n",
+                "path": "src/app/globals.css",
+                "summary": "Write global styles",
+                "content": "body { margin: 0; }\n",
             },
             {
                 "type": "write",
-                "path": "src/App.tsx",
+                "path": "src/app/page.tsx",
                 "summary": "Write app shell",
                 "content": "export default function App() {\n  return <main>Ready</main>;\n}\n",
             },
@@ -45,7 +45,7 @@ def test_verify_loop_rejects_placeholder_app_content() -> None:
         fileOperations=[
             {
                 "type": "write",
-                "path": "src/App.tsx",
+                "path": "src/app/page.tsx",
                 "summary": "Render route shell",
                 "content": "const Home = () => <div>行程概览页（待实现）</div>;\nexport default Home;\n",
             }
@@ -57,8 +57,8 @@ def test_verify_loop_rejects_placeholder_app_content() -> None:
             "state": state.as_contract(),
             "workspace_snapshot": [
                 {"path": "package.json", "content": "{}"},
-                {"path": "index.html", "content": "<!doctype html>"},
-                {"path": "src/main.tsx", "content": "import './App';"},
+                {"path": "src/app/layout.tsx", "content": "import './globals.css';\nexport default function RootLayout({ children }: { children: React.ReactNode }) { return <html><body>{children}</body></html>; }\n"},
+                {"path": "src/app/globals.css", "content": "body { margin: 0; }"},
             ],
             "approved": False,
         }
@@ -85,19 +85,19 @@ def test_verify_loop_rejects_missing_local_import_targets() -> None:
             },
             {
                 "type": "write",
-                "path": "index.html",
-                "summary": "Write html",
-                "content": "<!doctype html><html><body><div id='root'></div></body></html>\n",
+                "path": "src/app/layout.tsx",
+                "summary": "Write root layout",
+                "content": "import './globals.css';\nexport default function RootLayout({ children }: { children: React.ReactNode }) { return <html><body>{children}</body></html>; }\n",
             },
             {
                 "type": "write",
-                "path": "src/main.tsx",
-                "summary": "Write main entry",
-                "content": "import App from './App';\n",
+                "path": "src/app/globals.css",
+                "summary": "Write global styles",
+                "content": "body { margin: 0; }\n",
             },
             {
                 "type": "write",
-                "path": "src/App.tsx",
+                "path": "src/app/page.tsx",
                 "summary": "Render routed app",
                 "content": (
                     "import Home from './components/Home';\n"
@@ -122,7 +122,7 @@ def test_verify_loop_rejects_missing_local_import_targets() -> None:
     assert next_state.status == ProjectStatus.ERROR
     assert next_state.error is not None
     assert "引用了尚未生成的本地文件" in next_state.error
-    assert "src/App.tsx -> ./components/Home" in next_state.error
+    assert "src/app/page.tsx -> ./components/Home" in next_state.error
 
 
 def test_verify_loop_blocks_low_build_readiness_scores(monkeypatch) -> None:
@@ -187,9 +187,9 @@ def test_verify_loop_attempts_preflight_repair_for_incomplete_fresh_app(monkeypa
             },
             {
                 "type": "write",
-                "path": "index.html",
-                "summary": "Write html shell",
-                "content": "<!doctype html><html><body><div id='root'></div></body></html>\n",
+                "path": "src/app/globals.css",
+                "summary": "Write incomplete global styles",
+                "content": "body { margin: 0; }\n",
             },
         ],
     )
@@ -213,19 +213,19 @@ def test_verify_loop_attempts_preflight_repair_for_incomplete_fresh_app(monkeypa
             }),
             FileOperation.model_validate({
                 "type": "write",
-                "path": "index.html",
-                "summary": "Write html shell",
-                "content": "<!doctype html><html><body><div id='root'></div></body></html>\n",
+                "path": "src/app/layout.tsx",
+                "summary": "Write root layout",
+                "content": "import './globals.css';\nexport default function RootLayout({ children }: { children: React.ReactNode }) { return <html><body>{children}</body></html>; }\n",
             }),
             FileOperation.model_validate({
                 "type": "write",
-                "path": "src/main.tsx",
-                "summary": "Write app entry",
-                "content": "import ReactDOM from 'react-dom/client';\nimport App from './App';\nReactDOM.createRoot(document.getElementById('root')!).render(<App />);\n",
+                "path": "src/app/globals.css",
+                "summary": "Write global styles",
+                "content": "body { margin: 0; }\n",
             }),
             FileOperation.model_validate({
                 "type": "write",
-                "path": "src/App.tsx",
+                "path": "src/app/page.tsx",
                 "summary": "Write app shell",
                 "content": "export default function App() {\n  return <main>校园二手市场</main>;\n}\n",
             }),
@@ -256,14 +256,14 @@ def test_verify_loop_attempts_preflight_repair_for_incomplete_fresh_app(monkeypa
     next_state = AgentSessionState.model_validate(result["state"])
 
     assert next_state.error is None
-    assert captured["calls"][0]["error"] == "当前生成的文件操作还不能产出可运行的 React + Vite 应用。"
+    assert captured["calls"][0]["error"] == "当前生成的文件操作还不能产出可运行的 Next.js App Router 应用。"
     assert captured["calls"][0]["category"] == "requirement_mismatch"
     assert "package.json" in captured["calls"][0]["paths"]
     assert {operation.path for operation in next_state.file_operations} >= {
         "package.json",
-        "index.html",
-        "src/main.tsx",
-        "src/App.tsx",
+        "src/app/layout.tsx",
+        "src/app/globals.css",
+        "src/app/page.tsx",
     }
 
 
@@ -300,7 +300,7 @@ def test_verify_loop_does_not_run_design_polish_by_default(monkeypatch) -> None:
         fileOperations=make_complete_state().file_operations + [
             {
                 "type": "write",
-                "path": "src/App.css",
+                "path": "src/app/polish.css",
                 "summary": "Write app styles",
                 "content": ".card { background: white; border-radius: 16px; }\n",
             },
@@ -334,8 +334,9 @@ def test_verify_loop_does_not_run_design_polish_by_default(monkeypatch) -> None:
                     "content": (
                         "{"
                         "\"name\":\"tennis-coach\","
-                        "\"dependencies\":{\"react\":\"^18.3.1\",\"react-dom\":\"^18.3.1\",\"lucide-react\":\"^0.511.0\",\"framer-motion\":\"^11.11.17\"},"
-                        "\"devDependencies\":{\"vite\":\"^5.4.5\",\"tailwindcss\":\"^3.4.17\",\"postcss\":\"^8.4.49\",\"autoprefixer\":\"^10.4.20\"}"
+                        "\"scripts\":{\"dev\":\"next dev\",\"build\":\"next build\"},"
+                        "\"dependencies\":{\"next\":\"^14.2.25\",\"react\":\"^18.3.1\",\"react-dom\":\"^18.3.1\",\"lucide-react\":\"^0.511.0\",\"framer-motion\":\"^11.11.17\"},"
+                        "\"devDependencies\":{\"tailwindcss\":\"^3.4.17\",\"postcss\":\"^8.4.49\",\"autoprefixer\":\"^10.4.20\"}"
                         "}\n"
                     ),
                 }
@@ -345,7 +346,7 @@ def test_verify_loop_does_not_run_design_polish_by_default(monkeypatch) -> None:
                     "type": "write",
                     "path": "tailwind.config.js",
                     "summary": "Write Tailwind config",
-                    "content": "export default { content: ['./index.html', './src/**/*.{js,ts,jsx,tsx}'], theme: { extend: {} }, plugins: [] };\n",
+                    "content": "export default { content: ['./src/app/**/*.{js,ts,jsx,tsx}', './src/components/**/*.{js,ts,jsx,tsx}'], theme: { extend: {} }, plugins: [] };\n",
                 }
             ),
             FileOperation.model_validate(
@@ -359,7 +360,7 @@ def test_verify_loop_does_not_run_design_polish_by_default(monkeypatch) -> None:
             FileOperation.model_validate(
                 {
                     "type": "write",
-                    "path": "src/index.css",
+                    "path": "src/app/globals.css",
                     "summary": "Write base styles",
                     "content": "@tailwind base;\n@tailwind components;\n@tailwind utilities;\n",
                 }
@@ -367,15 +368,15 @@ def test_verify_loop_does_not_run_design_polish_by_default(monkeypatch) -> None:
             FileOperation.model_validate(
                 {
                     "type": "write",
-                    "path": "src/main.tsx",
-                    "summary": "Write main entry",
-                    "content": "import ReactDOM from 'react-dom/client';\nimport './index.css';\nimport App from './App';\nReactDOM.createRoot(document.getElementById('root')!).render(<App />);\n",
+                    "path": "src/app/layout.tsx",
+                    "summary": "Write root layout",
+                    "content": "import './globals.css';\nexport default function RootLayout({ children }: { children: React.ReactNode }) { return <html><body>{children}</body></html>; }\n",
                 }
             ),
             FileOperation.model_validate(
                 {
                     "type": "write",
-                    "path": "src/App.tsx",
+                    "path": "src/app/page.tsx",
                     "summary": "Write polished app",
                     "content": (
                         "import { motion } from 'framer-motion';\n"

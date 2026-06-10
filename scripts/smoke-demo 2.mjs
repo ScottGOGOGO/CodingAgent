@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 const API_BASE = process.env.API_BASE ?? "http://127.0.0.1:4100";
-const REASONING_MODE = process.env.REASONING_MODE ?? "plan_solve";
+const REASONING_MODE = process.env.REASONING_MODE ?? "local_generator";
 const POLL_INTERVAL_MS = Number(process.env.SMOKE_POLL_INTERVAL_MS ?? 3000);
 const TURN_TIMEOUT_MS = Number(process.env.SMOKE_TURN_TIMEOUT_MS ?? 420000);
 const READY_TIMEOUT_MS = Number(process.env.SMOKE_READY_TIMEOUT_MS ?? 420000);
@@ -68,7 +68,7 @@ function summarizeProject(stage, name, project) {
       project.session?.messages?.length
         ? project.session.messages[project.session.messages.length - 1].content
         : null,
-    fileOps: project.session?.fileOperations?.length ?? 0,
+    toolCalls: project.latestRun?.toolCalls?.length ?? 0,
   };
 }
 
@@ -81,7 +81,7 @@ async function runCase(testCase) {
   console.log(`created ${testCase.name} project_id=${projectId}`);
 
   await api("POST", `/projects/${projectId}/messages`, testCase.body);
-  const afterTurn = await waitForProject(projectId, new Set(["awaiting_approval", "failed", "clarifying"]), TURN_TIMEOUT_MS);
+  const afterTurn = await waitForProject(projectId, new Set(["awaiting_approval", "failed", "awaiting_input"]), TURN_TIMEOUT_MS);
   console.log(JSON.stringify(summarizeProject("after_turn", testCase.name, afterTurn), null, 2));
 
   if (afterTurn.status !== "awaiting_approval") {

@@ -8,9 +8,34 @@ export const SMOKE_CASES = [
   {
     name: "clarify_then_ready",
     prompt: "帮我做一个上海旅游攻略 web 应用。",
-    expectedInitialStatus: "clarifying",
+    expectedInitialStatus: "awaiting_input",
+  },
+  {
+    name: "personal_travel_journal_checklist_local",
+    prompt:
+      "帮我做一个中文移动优先的旅游手帐 Web App，use-case: personal，core-features: checklist，data-storage: local。首版必须是商业化可用的移动产品，不是 demo：包含首页今日旅行状态、行前 checklist、旅途中每日手帐、地点/照片灵感记录、离线本地保存提示和底部导航。数据只用浏览器本地状态或 localStorage，不需要登录、支付、后台管理或真实云接口。视觉要精致，像现代旅行手帐和高质感效率工具结合，移动端首屏要明确用途，所有按钮、空状态、加载状态和错误状态都要完整，不能有 TODO、lorem ipsum、coming soon 或占位文案。",
+    expectedInitialStatus: "awaiting_approval",
   },
 ];
+
+export const STRICT_FIVE_ROUND_CASES = [
+  "direct_ready",
+  "clarify_then_ready",
+  "personal_travel_journal_checklist_local",
+  "direct_ready",
+  "personal_travel_journal_checklist_local",
+].map((name, index) => {
+  const testCase = SMOKE_CASES.find((candidate) => candidate.name === name);
+  if (!testCase) {
+    throw new Error(`Unknown strict smoke case: ${name}`);
+  }
+  return {
+    ...testCase,
+    name: `${testCase.name}_round_${index + 1}`,
+    baseName: testCase.name,
+    strictRound: index + 1,
+  };
+});
 
 const GENERIC_CLARIFICATION_REPLY = [
   "1. 三天两晚，节假日出行，下周五出发。",

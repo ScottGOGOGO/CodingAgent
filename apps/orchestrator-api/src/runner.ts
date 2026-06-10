@@ -1,11 +1,12 @@
-import { execFile as execFileCb, spawn, type ChildProcess } from "node:child_process";
-import { appendFile, mkdir } from "node:fs/promises";
+import { spawn, type ChildProcess } from "node:child_process";
+import { access, appendFile, mkdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { promisify } from "node:util";
 
-import type { ExecutionStep, ProjectRecord } from "@vide/contracts";
-
-const execFile = promisify(execFileCb);
+export type PreviewTarget = {
+  id: string;
+  workspaceRoot: string;
+  logRoot: string;
+};
 
 export class CommandExecutionError extends Error {
   constructor(
@@ -17,76 +18,222 @@ export class CommandExecutionError extends Error {
   }
 }
 
-export function commandForStep(step: ExecutionStep, portOverride?: number): string[] | null {
-  switch (step.type) {
-    case "install_dependencies":
-      return ["npm", "install"];
-    case "build_web_app":
-      return ["npm", "run", "build"];
-    case "start_vite_preview":
-      return ["npm", "run", "dev", "--", "--host", "0.0.0.0", "--port", String(portOverride ?? step.port ?? 4173)];
-    case "stop_preview":
-    case "git_snapshot":
-    case "health_check":
-      return null;
-    default:
-      return null;
+const STATIC_EXPORT_PREVIEW_SERVER = String.raw`
+const { createReadStream, promises: fs } = require("node:fs");
+const { createServer } = require("node:http");
+const path = require("node:path");
+
+const port = Number(process.argv[1] || 4173);
+const root = path.resolve(process.cwd(), "out");
+const mimeTypes = {
+  ".css": "text/css; charset=utf-8",
+  ".gif": "image/gif",
+  ".html": "text/html; charset=utf-8",
+  ".ico": "image/x-icon",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".js": "text/javascript; charset=utf-8",
+  ".json": "application/json; charset=utf-8",
+  ".png": "image/png",
+  ".svg": "image/svg+xml",
+  ".txt": "text/plain; charset=utf-8",
+  ".webp": "image/webp",
+  ".woff": "font/woff",
+  ".woff2": "font/woff2"
+};
+
+async function findFile(relativePath) {
+  const resolved = path.resolve(root, relativePath.replace(/^\/+/, ""));
+  if (resolved !== root && !resolved.startsWith(root + path.sep)) {
+    return null;
+  }
+  try {
+    const stat = await fs.stat(resolved);
+    return stat.isFile() ? resolved : null;
+  } catch {
+    return null;
   }
 }
 
-async function writeLog(project: ProjectRecord, message: string): Promise<void> {
-  await mkdir(project.workspaceRoot, { recursive: true });
-  await appendFile(join(project.workspaceRoot, ".preview.log"), message, "utf-8");
+async function resolveRequestPath(pathname) {
+  const relative = pathname.replace(/^\/+/, "");
+  const candidates = relative
+    ? pathname.endsWith("/")
+      ? [path.join(relative, "index.html")]
+      : [relative, relative + ".html", path.join(relative, "index.html")]
+    : ["index.html"];
+  for (const candidate of candidates) {
+    const file = await findFile(candidate);
+    if (file) return file;
+  }
+  return null;
 }
 
-async function waitForHealthy(url: string, timeoutMs = 60_000): Promise<string> {
-  const started = Date.now();
-  while (Date.now() - started < timeoutMs) {
+async function sendFile(response, filePath, statusCode) {
+  const ext = path.extname(filePath).toLowerCase();
+  response.writeHead(statusCode, {
+    "Cache-Control": "no-store",
+    "Content-Type": mimeTypes[ext] || "application/octet-stream"
+  });
+  createReadStream(filePath).pipe(response);
+}
+
+createServer(async (request, response) => {
+  try {
+    const url = new URL(request.url || "/", "http://127.0.0.1");
+    const file = await resolveRequestPath(decodeURIComponent(url.pathname));
+    if (file) {
+      if (request.method === "HEAD") {
+        response.writeHead(200, { "Cache-Control": "no-store" });
+        response.end();
+        return;
+      }
+      await sendFile(response, file, 200);
+      return;
+    }
+    const notFound = (await findFile("404.html")) || (await findFile("404/index.html"));
+    if (notFound) {
+      await sendFile(response, notFound, 404);
+      return;
+    }
+    response.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+    response.end("Not found");
+  } catch (error) {
+    response.writeHead(500, { "Content-Type": "text/plain; charset=utf-8" });
+    response.end(error instanceof Error ? error.message : String(error));
+  }
+}).listen(port, "0.0.0.0", () => {
+  console.log("Static export preview ready at http://127.0.0.1:" + port);
+});
+`;
+
+export function commandForStep(type: "install" | "build" | "preview" | "devPreview" | "staticPreview", port?: number): string[] {
+  if (type === "install") {
+    return ["npm", "install"];
+  }
+  if (type === "build") {
+    return ["npm", "run", "build"];
+  }
+  if (type === "devPreview") {
+    return ["npm", "run", "dev", "--", "--hostname", "0.0.0.0", "--port", String(port ?? 4173)];
+  }
+  if (type === "staticPreview") {
+    return ["node", "-e", STATIC_EXPORT_PREVIEW_SERVER, String(port ?? 4173)];
+  }
+  return ["npm", "run", "start", "--", "--hostname", "0.0.0.0", "--port", String(port ?? 4173)];
+}
+
+export async function previewBuildCommandForWorkspace(workspaceRoot: string): Promise<string[] | null> {
+  let packageJson: { scripts?: Record<string, string> };
+  try {
+    packageJson = JSON.parse(await readFile(join(workspaceRoot, "package.json"), "utf-8")) as { scripts?: Record<string, string> };
+  } catch {
+    return null;
+  }
+
+  if (!/\bnext\s+start\b/.test(packageJson.scripts?.start ?? "")) {
+    return null;
+  }
+
+  if (await isNextStaticExportWorkspace(workspaceRoot)) {
+    return (await hasStaticExportBundle(workspaceRoot)) ? null : commandForStep("build");
+  }
+
+  try {
+    await access(join(workspaceRoot, ".next", "BUILD_ID"));
+    return null;
+  } catch {
+    return commandForStep("build");
+  }
+}
+
+export async function previewStartCommandForWorkspace(workspaceRoot: string, port: number): Promise<string[]> {
+  if (await isNextStaticExportWorkspace(workspaceRoot)) {
+    return commandForStep("staticPreview", port);
+  }
+  return commandForStep("preview", port);
+}
+
+async function isNextStaticExportWorkspace(workspaceRoot: string): Promise<boolean> {
+  for (const configName of ["next.config.mjs", "next.config.js", "next.config.ts"]) {
     try {
-      const response = await fetch(url);
-      if (response.ok) {
-        return url;
+      const content = await readFile(join(workspaceRoot, configName), "utf-8");
+      if (/\boutput\s*:\s*["']export["']/.test(content)) {
+        return true;
       }
     } catch {
-      // keep polling until the timeout elapses
+      // Keep looking for a supported Next config file.
     }
-
-    await new Promise((resolve) => setTimeout(resolve, 1000));
   }
-
-  throw new Error(`Preview server did not become healthy at ${url}.`);
+  return false;
 }
 
-async function isDockerAvailable(): Promise<boolean> {
+async function hasStaticExportBundle(workspaceRoot: string): Promise<boolean> {
   try {
-    await execFile("docker", ["--version"]);
+    await access(join(workspaceRoot, "out", "index.html"));
     return true;
   } catch {
     return false;
   }
 }
 
-interface RunnerContext {
-  emitLog: (message: string) => Promise<void>;
-  project: ProjectRecord;
+async function writeLog(target: PreviewTarget, message: string): Promise<void> {
+  await mkdir(target.logRoot, { recursive: true });
+  await appendFile(join(target.logRoot, ".preview.log"), message, "utf-8");
 }
 
-class LocalProcessRunner {
+function stripAnsi(value: string): string {
+  return value.replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, "");
+}
+
+function cleanChildEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const next = { ...env };
+  if (next.FORCE_COLOR !== undefined) {
+    delete next.NO_COLOR;
+  }
+  return next;
+}
+
+async function readPreviewLogTail(target: PreviewTarget, maxChars = 4000): Promise<string> {
+  try {
+    const content = await readFile(join(target.logRoot, ".preview.log"), "utf-8");
+    return content.slice(-maxChars).trim();
+  } catch {
+    return "";
+  }
+}
+
+export async function waitForHealthy(target: PreviewTarget, url: string, timeoutMs = 60_000): Promise<string> {
+  const started = Date.now();
+  let lastFailure = "";
+  while (Date.now() - started < timeoutMs) {
+    try {
+      const response = await fetch(url);
+      if (response.ok) {
+        return url;
+      }
+      const body = await response.text().catch(() => "");
+      lastFailure = `HTTP ${response.status} at ${url}${body ? `\n${stripAnsi(body).slice(-1200)}` : ""}`;
+      if (response.status >= 500) {
+        const logTail = await readPreviewLogTail(target);
+        throw new Error(`Preview server returned ${response.status}.\n${logTail || lastFailure}`);
+      }
+    } catch (error) {
+      if (error instanceof Error && /Preview server returned/.test(error.message)) {
+        throw error;
+      }
+      lastFailure = error instanceof Error ? error.message : String(error);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+  }
+  const logTail = await readPreviewLogTail(target);
+  throw new Error(`Preview server did not become healthy at ${url}.${logTail ? `\n${logTail}` : lastFailure ? `\n${lastFailure}` : ""}`);
+}
+
+export class RunnerService {
   private readonly processes = new Map<string, ChildProcess>();
 
-  async stop(project: ProjectRecord): Promise<void> {
-    const child = this.processes.get(project.id);
-    if (!child) {
-      return;
-    }
-
-    child.kill("SIGTERM");
-    await new Promise((resolve) => setTimeout(resolve, 500));
-    if (!child.killed) {
-      child.kill("SIGKILL");
-    }
-    this.processes.delete(project.id);
-  }
+  constructor(private readonly _strategy: "auto" | "docker" | "local") {}
 
   async stopAll(): Promise<void> {
     for (const [id, child] of this.processes) {
@@ -95,29 +242,86 @@ class LocalProcessRunner {
     }
   }
 
-  async runForeground(step: ExecutionStep, context: RunnerContext): Promise<void> {
-    const command = commandForStep(step);
-    if (!command) {
+  async stop(id: string): Promise<void> {
+    const child = this.processes.get(id);
+    if (!child) {
       return;
     }
+    child.kill("SIGTERM");
+    this.processes.delete(id);
+  }
 
+  async startPreview(target: PreviewTarget, port: number, emitLog: (message: string) => void): Promise<string> {
+    await this.stop(target.id);
+    const buildCommand = await previewBuildCommandForWorkspace(target.workspaceRoot);
+    if (buildCommand) {
+      const message = "Production preview bundle missing; rebuilding before starting preview.\n";
+      emitLog(message);
+      await writeLog(target, message);
+      await this.runCommand(target, buildCommand, emitLog);
+    }
+    const command = await previewStartCommandForWorkspace(target.workspaceRoot, port);
+    const child = this.spawnPreviewProcess(target, command, emitLog);
+    return waitForHealthy(target, `http://127.0.0.1:${port}`);
+  }
+
+  async startDevPreview(target: PreviewTarget, port: number, emitLog: (message: string) => void): Promise<string> {
+    await this.stop(target.id);
+    const message = "Acceptance is paused; starting candidate with the dev server.\n";
+    emitLog(message);
+    await writeLog(target, message);
+    await this.runCommand(target, commandForStep("install"), emitLog);
+    const child = this.spawnPreviewProcess(target, commandForStep("devPreview", port), emitLog);
+    return waitForHealthy(target, `http://127.0.0.1:${port}`);
+  }
+
+  private spawnPreviewProcess(target: PreviewTarget, command: string[], emitLog: (message: string) => void): ChildProcess {
+    const child = spawn(command[0], command.slice(1), {
+      cwd: target.workspaceRoot,
+      env: cleanChildEnv({ ...process.env, DATABASE_URL: "file:./dev.db" }),
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+
+    child.stdout?.on("data", async (chunk) => {
+      const text = stripAnsi(String(chunk));
+      emitLog(text);
+      await writeLog(target, text);
+    });
+    child.stderr?.on("data", async (chunk) => {
+      const text = stripAnsi(String(chunk));
+      emitLog(text);
+      await writeLog(target, text);
+    });
+    child.once("error", async (error) => {
+      const text = stripAnsi(`Preview error: ${error.message}\n`);
+      emitLog(text);
+      await writeLog(target, text);
+    });
+
+    this.processes.set(target.id, child);
+    return child;
+  }
+
+  async runCommand(target: PreviewTarget, command: string[], emitLog: (message: string) => void): Promise<void> {
     await new Promise<void>((resolve, reject) => {
       let output = "";
       const child = spawn(command[0], command.slice(1), {
-        cwd: context.project.workspaceRoot,
-        env: process.env,
+        cwd: target.workspaceRoot,
+        env: cleanChildEnv({ ...process.env, DATABASE_URL: "file:./dev.db" }),
         stdio: ["ignore", "pipe", "pipe"],
       });
 
       child.stdout?.on("data", async (chunk) => {
-        const text = String(chunk);
+        const text = stripAnsi(String(chunk));
         output += text;
-        await context.emitLog(text);
+        emitLog(text);
+        await writeLog(target, text);
       });
       child.stderr?.on("data", async (chunk) => {
-        const text = String(chunk);
+        const text = stripAnsi(String(chunk));
         output += text;
-        await context.emitLog(text);
+        emitLog(text);
+        await writeLog(target, text);
       });
       child.once("error", reject);
       child.once("close", (code) => {
@@ -125,193 +329,8 @@ class LocalProcessRunner {
           resolve();
           return;
         }
-
         reject(new CommandExecutionError(command, output));
       });
     });
-  }
-
-  async startPreview(step: ExecutionStep, context: RunnerContext): Promise<string> {
-    await this.stop(context.project);
-
-    const port = step.port ?? 4173;
-    const command = commandForStep(step, port);
-    if (!command) {
-      throw new Error("No command available for preview start.");
-    }
-
-    const child = spawn(command[0], command.slice(1), {
-      cwd: context.project.workspaceRoot,
-      env: process.env,
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-
-    child.stdout?.on("data", async (chunk) => {
-      await context.emitLog(String(chunk));
-    });
-    child.stderr?.on("data", async (chunk) => {
-      await context.emitLog(String(chunk));
-    });
-    child.once("error", async (error) => {
-      await context.emitLog(`Preview error: ${error.message}\n`);
-    });
-
-    this.processes.set(context.project.id, child);
-    return waitForHealthy(`http://127.0.0.1:${port}`);
-  }
-}
-
-class DockerRunner {
-  private readonly containers = new Map<string, string>();
-
-  private containerName(project: ProjectRecord): string {
-    return `vide-preview-${project.id.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
-  }
-
-  async stop(project: ProjectRecord): Promise<void> {
-    const name = this.containerName(project);
-    try {
-      await execFile("docker", ["rm", "-f", name]);
-    } catch {
-      // no-op
-    }
-    this.containers.delete(project.id);
-  }
-
-  async stopAll(): Promise<void> {
-    for (const [id, name] of this.containers) {
-      try {
-        await execFile("docker", ["rm", "-f", name]);
-      } catch {
-        // no-op
-      }
-      this.containers.delete(id);
-    }
-  }
-
-  async runForeground(step: ExecutionStep, context: RunnerContext): Promise<void> {
-    const command = commandForStep(step);
-    if (!command) {
-      return;
-    }
-
-    const shellCommand = command.join(" ");
-    try {
-      const result = await execFile(
-        "docker",
-        [
-          "run",
-          "--rm",
-          "-w",
-          "/app",
-          "-v",
-          `${context.project.workspaceRoot}:/app`,
-          "node:22-alpine",
-          "sh",
-          "-lc",
-          shellCommand,
-        ],
-        { env: process.env },
-      );
-      if (result.stdout) {
-        await context.emitLog(result.stdout);
-      }
-      if (result.stderr) {
-        await context.emitLog(result.stderr);
-      }
-    } catch (error) {
-      const output = `${(error as { stdout?: string }).stdout ?? ""}${(error as { stderr?: string }).stderr ?? ""}`;
-      if (output) {
-        await context.emitLog(output);
-      }
-      throw new CommandExecutionError(command, output);
-    }
-  }
-
-  async startPreview(step: ExecutionStep, context: RunnerContext): Promise<string> {
-    await this.stop(context.project);
-
-    const port = step.port ?? 4173;
-    const name = this.containerName(context.project);
-    await execFile(
-      "docker",
-      [
-        "run",
-        "-d",
-        "--name",
-        name,
-        "-w",
-        "/app",
-        "-v",
-        `${context.project.workspaceRoot}:/app`,
-        "-p",
-        `${port}:4173`,
-        "node:22-alpine",
-        "sh",
-        "-lc",
-        "npm run dev -- --host 0.0.0.0 --port 4173",
-      ],
-      { env: process.env },
-    );
-
-    this.containers.set(context.project.id, name);
-    return waitForHealthy(`http://127.0.0.1:${port}`);
-  }
-}
-
-export class RunnerService {
-  private readonly local = new LocalProcessRunner();
-  private readonly docker = new DockerRunner();
-
-  constructor(private readonly strategy: "auto" | "docker" | "local") {}
-
-  private async selectRuntime() {
-    if (this.strategy === "local") {
-      return this.local;
-    }
-
-    if (this.strategy === "docker") {
-      return this.docker;
-    }
-
-    return (await isDockerAvailable()) ? this.docker : this.local;
-  }
-
-  async stopAll(): Promise<void> {
-    await this.local.stopAll();
-    await this.docker.stopAll();
-  }
-
-  async stop(project: ProjectRecord, emitLog: (message: string) => Promise<void>): Promise<void> {
-    const runner = await this.selectRuntime();
-    await emitLog("Stopping previous preview if it exists.\n");
-    await runner.stop(project);
-  }
-
-  async execute(step: ExecutionStep, project: ProjectRecord, emitLog: (message: string) => Promise<void>): Promise<string | undefined> {
-    const runner = await this.selectRuntime();
-    const context: RunnerContext = {
-      project,
-      emitLog: async (message) => {
-        await writeLog(project, message);
-        await emitLog(message);
-      },
-    };
-
-    switch (step.type) {
-      case "install_dependencies":
-      case "build_web_app":
-        await runner.runForeground(step, context);
-        return undefined;
-      case "start_vite_preview":
-        return runner.startPreview(step, context);
-      case "health_check":
-        return waitForHealthy(step.url ?? `http://127.0.0.1:${step.port ?? 4173}`);
-      case "stop_preview":
-        await runner.stop(project);
-        return undefined;
-      default:
-        return undefined;
-    }
   }
 }

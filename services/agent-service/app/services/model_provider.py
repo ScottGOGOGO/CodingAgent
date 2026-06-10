@@ -28,7 +28,7 @@ class ModelProvider:
 
     def get_chat_model(self, role: ModelRole, timeout_seconds: Optional[float] = None) -> Optional[BaseChatModel]:
         settings = get_settings()
-        if settings.normalized_model_provider not in {"openai_compatible", "openai", "qwen", "gemini", "claude"}:
+        if settings.normalized_model_provider not in {"openai_compatible", "openai", "qwen", "deepseek", "gemini", "claude"}:
             raise ModelProviderError(f"暂不支持的模型提供方：{settings.model_provider}")
 
         if not settings.resolved_api_key:

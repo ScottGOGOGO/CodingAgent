@@ -25,6 +25,12 @@ def test_runtime_returns_error_when_model_api_key_is_not_configured_before_clari
     monkeypatch.setenv("OPENAI_API_KEY", "")
     monkeypatch.setenv("OPENAI_BASE_URL", "")
     monkeypatch.setenv("OPENAI_MODEL", "")
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "")
+    monkeypatch.setenv("Deepseek_API_KEY", "")
+    monkeypatch.setenv("DEEPSEEK_BASE_URL", "")
+    monkeypatch.setenv("Deepseek_BASE_URL", "")
+    monkeypatch.setenv("DEEPSEEK_MODEL", "")
+    monkeypatch.setenv("Deepseek_MODEL", "")
     monkeypatch.setenv("GEMINI_API_KEY", "")
     monkeypatch.setenv("GEMINI_BASE_URL", "")
     monkeypatch.setenv("GEMINI_MODEL", "")
@@ -60,6 +66,12 @@ def test_runtime_repair_returns_error_when_model_api_key_is_not_configured(monke
     monkeypatch.setenv("OPENAI_API_KEY", "")
     monkeypatch.setenv("OPENAI_BASE_URL", "")
     monkeypatch.setenv("OPENAI_MODEL", "")
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "")
+    monkeypatch.setenv("Deepseek_API_KEY", "")
+    monkeypatch.setenv("DEEPSEEK_BASE_URL", "")
+    monkeypatch.setenv("Deepseek_BASE_URL", "")
+    monkeypatch.setenv("DEEPSEEK_MODEL", "")
+    monkeypatch.setenv("Deepseek_MODEL", "")
     monkeypatch.setenv("GEMINI_API_KEY", "")
     monkeypatch.setenv("GEMINI_BASE_URL", "")
     monkeypatch.setenv("GEMINI_MODEL", "")
@@ -108,7 +120,7 @@ def test_runtime_repair_returns_error_when_model_api_key_is_not_configured(monke
         },
         workspaceSnapshot=[
             {
-                "path": "src/App.tsx",
+                "path": "src/app/page.tsx",
                 "content": "export default function App() { return <div>Hello</div>; }",
             }
         ],
@@ -116,7 +128,7 @@ def test_runtime_repair_returns_error_when_model_api_key_is_not_configured(monke
             "attempt": 1,
             "category": "type_build",
             "failedCommand": "npm run build",
-            "buildError": "src/App.tsx:1 unused variable",
+            "buildError": "src/app/page.tsx:1 unused variable",
         },
     )
 

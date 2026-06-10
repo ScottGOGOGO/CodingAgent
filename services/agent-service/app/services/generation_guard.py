@@ -43,9 +43,9 @@ class GenerationGuardService:
             elif operation.type == "delete":
                 final_paths.discard(operation.path)
 
-        required_paths = {"package.json", "index.html", "src/main.tsx", "src/App.tsx"}
+        required_paths = {"package.json", "src/app/layout.tsx", "src/app/page.tsx", "src/app/globals.css"}
         if not required_paths.issubset(final_paths):
-            return "当前生成的文件操作还不能产出可运行的 React + Vite 应用。"
+            return "当前生成的文件操作还不能产出可运行的 Next.js App Router 应用。"
 
         placeholder_paths = self.find_placeholder_paths(state.file_operations)
         if placeholder_paths:

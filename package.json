@@ -9,7 +9,7 @@
   "scripts": {
     "build": "npm run build --workspaces --if-present",
     "dev:all": "node scripts/dev-all.mjs",
-    "dev:agent": "cd services/agent-service && uvicorn app.main:app --reload --port 8001",
+    "dev:agent": "npm --workspace @vide/orchestrator-api run dev",
     "dev:api": "npm --workspace @vide/orchestrator-api run dev",
     "dev:playground": "npm --workspace @vide/playground run dev",
     "smoke:api": "node scripts/smoke-demo.mjs",

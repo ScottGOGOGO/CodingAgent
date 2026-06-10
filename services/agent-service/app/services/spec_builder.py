@@ -104,7 +104,7 @@ class SpecBuilder:
             [
                 (
                     "system",
-                    "You normalize a hierarchical product brief into an implementation-ready React + Vite web app spec. "
+                    "You normalize a hierarchical product brief into an implementation-ready full-stack Next.js App Router web app spec. "
                     "Preserve the user's intent, make missing details explicit as assumptions, and return valid JSON only. "
                     f"{USER_FACING_LANGUAGE_RULE}",
                 ),
@@ -271,7 +271,7 @@ class SpecBuilder:
     def _infer_summary(title: str, target_users: List[str], screens: List[ScreenSpec], transcript: str) -> str:
         target = target_users[0] if target_users else "目标用户"
         screen_count = len(screens)
-        return f"{title} 是一个面向{target}的 React + Vite Web 应用，围绕核心任务提供 {screen_count or 3} 个关键页面与清晰的使用流程。"
+        return f"{title} 是一个面向{target}的 Next.js App Router 全栈 Web 应用，围绕核心任务提供 {screen_count or 3} 个关键页面与清晰的使用流程。"
 
     @staticmethod
     def _infer_visual_direction(transcript: str) -> str:

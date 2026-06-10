@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -57,30 +57,16 @@ function loadEnv() {
   };
 }
 
-function resolvePythonExecutable() {
-  const candidates = [
-    resolve(repoRoot, ".venv", "bin", "python"),
-    resolve(repoRoot, ".venv", "Scripts", "python.exe"),
-    "python3",
-    "python",
-  ];
-
-  for (const candidate of candidates) {
-    if (candidate.includes("/") || candidate.includes("\\")) {
-      if (existsSync(candidate)) {
-        return candidate;
-      }
-      continue;
-    }
-
-    return candidate;
-  }
-
-  return "python3";
-}
-
 function resolveNpmExecutable() {
   return process.platform === "win32" ? "npm.cmd" : "npm";
+}
+
+function cleanChildEnv(nextEnv) {
+  const cleaned = { ...nextEnv };
+  if (cleaned.FORCE_COLOR !== undefined) {
+    delete cleaned.NO_COLOR;
+  }
+  return cleaned;
 }
 
 function prefixStream(stream, prefix, target) {
@@ -108,52 +94,25 @@ function prefixStream(stream, prefix, target) {
 
 const env = loadEnv();
 const npmExecutable = resolveNpmExecutable();
-const pythonExecutable = resolvePythonExecutable();
 
-let agentUrl;
-try {
-  agentUrl = new URL(env.AGENT_SERVICE_URL ?? "http://127.0.0.1:8001");
-} catch {
-  agentUrl = new URL("http://127.0.0.1:8001");
-}
-
-const agentHost = agentUrl.hostname || "127.0.0.1";
-const agentPort = Number(agentUrl.port || "8001");
 const orchestratorPort = Number(env.ORCHESTRATOR_PORT ?? "4000");
 const playgroundPort = Number(env.PLAYGROUND_PORT ?? "5173");
-const enableReload = env.DEV_ALL_RELOAD === "1";
 const apiBase = env.VITE_API_BASE ?? `http://127.0.0.1:${orchestratorPort}`;
 
 const services = [
-  {
-    name: "agent",
-    color: "\x1b[36m",
-    cwd: resolve(repoRoot, "services", "agent-service"),
-    command: pythonExecutable,
-    args: [
-      "-m",
-      "uvicorn",
-      "app.main:app",
-      ...(enableReload ? ["--reload"] : []),
-      "--host",
-      agentHost,
-      "--port",
-      String(agentPort),
-    ],
-  },
   {
     name: "api",
     color: "\x1b[33m",
     cwd: repoRoot,
     command: npmExecutable,
-    args: ["--workspace", "@vide/orchestrator-api", "run", "dev"],
+    args: ["--workspace", "@vide/orchestrator-api", "run", "dev:prepared"],
   },
   {
     name: "playground",
     color: "\x1b[35m",
     cwd: repoRoot,
     command: npmExecutable,
-    args: ["--workspace", "@vide/playground", "run", "dev"],
+    args: ["--workspace", "@vide/playground", "run", "dev:prepared"],
   },
 ];
 
@@ -168,14 +127,13 @@ function log(message) {
 function spawnService(service) {
   const child = spawn(service.command, service.args, {
     cwd: service.cwd,
-    env: {
+    env: cleanChildEnv({
       ...env,
-      AGENT_SERVICE_URL: env.AGENT_SERVICE_URL ?? `http://${agentHost}:${agentPort}`,
       ORCHESTRATOR_PORT: String(orchestratorPort),
       PLAYGROUND_PORT: String(playgroundPort),
       VITE_API_BASE: apiBase,
       FORCE_COLOR: env.FORCE_COLOR ?? "1",
-    },
+    }),
     stdio: ["inherit", "pipe", "pipe"],
   });
 
@@ -234,12 +192,24 @@ process.on("SIGINT", () => shutdown(0));
 process.on("SIGTERM", () => shutdown(0));
 
 log("Starting Vibe Coding Agent local stack...");
-log(`- agent: http://${agentHost}:${agentPort}`);
 log(`- api: http://127.0.0.1:${orchestratorPort}`);
 log(`- playground: http://127.0.0.1:${playgroundPort}`);
 log(`- playground api base: ${apiBase}`);
-log(`- agent reload: ${enableReload ? "on" : "off"}`);
+log("- prebuild: @vide/agent-runtime");
 log("Press Ctrl+C to stop all services.\n");
+
+const prebuild = spawnSync(npmExecutable, ["--workspace", "@vide/agent-runtime", "run", "build"], {
+  cwd: repoRoot,
+  env: cleanChildEnv({
+    ...env,
+    FORCE_COLOR: env.FORCE_COLOR ?? "1",
+  }),
+  stdio: "inherit",
+});
+
+if (prebuild.status !== 0) {
+  process.exit(prebuild.status ?? 1);
+}
 
 for (const service of services) {
   spawnService(service);

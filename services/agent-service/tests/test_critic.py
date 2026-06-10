@@ -25,8 +25,8 @@ def make_state() -> AgentSessionState:
             "assumptions": [],
         },
         planSteps=[{"id": "step-1", "title": "Plan", "detail": "Plan", "status": "pending"}],
-        fileOperations=[{"type": "write", "path": "src/App.tsx", "summary": "Write app", "content": "export default function App() { return null; }"}],
-        lastContextPaths=["src/App.tsx"],
+        fileOperations=[{"type": "write", "path": "src/app/page.tsx", "summary": "Write app", "content": "export default function App() { return null; }"}],
+        lastContextPaths=["src/app/page.tsx"],
     )
 
 

@@ -47,6 +47,27 @@ def test_model_provider_keeps_legacy_qwen_env_working(monkeypatch) -> None:
     assert route.planner_model == "qwen3-coder-plus"
 
 
+def test_model_provider_supports_deepseek_env_block(monkeypatch) -> None:
+    monkeypatch.setenv("MODEL_PROVIDER", "deepseek")
+    monkeypatch.delenv("MODEL_API_KEY", raising=False)
+    monkeypatch.delenv("MODEL_BASE_URL", raising=False)
+    monkeypatch.delenv("MODEL_NAME", raising=False)
+    monkeypatch.setenv("Deepseek_API_KEY", "deepseek-key")
+    monkeypatch.setenv("Deepseek_BASE_URL", "https://api.deepseek.com")
+    monkeypatch.setenv("Deepseek_MODEL", "deepseek-v4-flash")
+    get_settings.cache_clear()
+
+    provider = ModelProvider()
+    route = provider.resolve_route()
+    settings = get_settings()
+
+    assert settings.resolved_runtime_provider == "deepseek"
+    assert settings.resolved_api_key == "deepseek-key"
+    assert settings.resolved_base_url == "https://api.deepseek.com"
+    assert settings.resolved_model_name == "deepseek-v4-flash"
+    assert route.coder_model == "deepseek-v4-flash"
+
+
 def test_openai_compatible_prefers_complete_provider_block_over_partial_one(monkeypatch) -> None:
     monkeypatch.setenv("MODEL_PROVIDER", "openai_compatible")
     monkeypatch.delenv("MODEL_API_KEY", raising=False)

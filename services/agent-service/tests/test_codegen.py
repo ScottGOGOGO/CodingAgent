@@ -61,7 +61,7 @@ def _build_codegen_spec() -> AppSpec:
             motionIntensity="低",
             interactionFocus=["任务输入", "状态反馈"],
         ),
-        constraints=["使用 React + Vite TypeScript"],
+        constraints=["使用 Next.js 14 App Router TypeScript"],
         successCriteria=["可以添加、勾选和删除待办"],
         assumptions=["使用本地状态管理"],
     )
@@ -75,7 +75,7 @@ def test_codegen_normalizes_patch_alias_and_run_dependency_command() -> None:
             content='{\n  "name": "demo",\n  "dependencies": {\n    "react": "^18.3.1"\n  }\n}\n',
         ),
         WorkspaceFile(
-            path="src/App.tsx",
+            path="src/app/page.tsx",
             content="export default function App() { return <div>Hello</div>; }\n",
         ),
     ]
@@ -85,7 +85,7 @@ def test_codegen_normalizes_patch_alias_and_run_dependency_command() -> None:
         operations=[
             StructuredFileOperationOutput(
                 op="patch",
-                path="src/App.tsx",
+                path="src/app/page.tsx",
                 summary="Update the app component.",
                 content="export default function App() { return <div>Updated</div>; }\n",
             ),
@@ -100,7 +100,7 @@ def test_codegen_normalizes_patch_alias_and_run_dependency_command() -> None:
 
     assert normalized.assistant_summary == "Repair dependencies and update the app."
     assert normalized.operations[0].type == "write"
-    assert normalized.operations[0].path == "src/App.tsx"
+    assert normalized.operations[0].path == "src/app/page.tsx"
     assert "Updated" in (normalized.operations[0].content or "")
     assert normalized.operations[1].path == "package.json"
     assert '"react-router-dom": "latest"' in (normalized.operations[1].content or "")
@@ -114,7 +114,7 @@ def test_codegen_infers_operation_types_from_common_aliases() -> None:
             content='{\n  "name": "demo",\n  "dependencies": {\n    "react": "^18.3.1"\n  }\n}\n',
         ),
         WorkspaceFile(
-            path="src/App.tsx",
+            path="src/app/page.tsx",
             content="export default function App() { return <div>Hello</div>; }\n",
         ),
     ]
@@ -125,7 +125,7 @@ def test_codegen_infers_operation_types_from_common_aliases() -> None:
             "operations": [
                 {
                     "action": "rewrite",
-                    "file": "src/App.tsx",
+                    "file": "src/app/page.tsx",
                     "description": "Rewrite the broken app component.",
                     "code": "export default function App() { return <div>Fixed</div>; }\n",
                 },
@@ -139,7 +139,7 @@ def test_codegen_infers_operation_types_from_common_aliases() -> None:
     normalized = service._normalize_generation_output(generation, context_snapshot)
 
     assert normalized.operations[0].type == "write"
-    assert normalized.operations[0].path == "src/App.tsx"
+    assert normalized.operations[0].path == "src/app/page.tsx"
     assert "Fixed" in (normalized.operations[0].content or "")
     assert normalized.operations[1].path == "package.json"
     assert '"react-router-dom": "latest"' in (normalized.operations[1].content or "")
@@ -149,7 +149,7 @@ def test_codegen_polishes_video_placeholder_copy() -> None:
     service = CodeGenerationService()
     context_snapshot = [
         WorkspaceFile(
-            path="src/App.tsx",
+            path="src/app/page.tsx",
             content="export default function App() { return <div>Hello</div>; }\n",
         ),
     ]
@@ -159,7 +159,7 @@ def test_codegen_polishes_video_placeholder_copy() -> None:
             "operations": [
                 {
                     "type": "write",
-                    "path": "src/App.tsx",
+                    "path": "src/app/page.tsx",
                     "content": "export default function App() { return <p>[Video placeholder: Serve demo]</p>; }\n",
                 }
             ],
@@ -442,7 +442,7 @@ def test_codegen_uses_raw_json_fallback_when_structured_transport_fails() -> Non
     service = CodeGenerationService()
     context_snapshot = [
         WorkspaceFile(
-            path="src/App.tsx",
+            path="src/app/page.tsx",
             content="export default function App() { return <div>Old</div>; }\n",
         ),
     ]
@@ -462,7 +462,7 @@ def test_codegen_uses_raw_json_fallback_when_structured_transport_fails() -> Non
                 {
                     "content": (
                         '{"assistantSummary":"raw 回退成功。","operations":'
-                        '[{"op":"patch","path":"src/App.tsx","before":"export default function App() { return <div>Old</div>; }\\n","after":"export default function App() { return <div>Recovered</div>; }\\n"}]}'
+                        '[{"op":"patch","path":"src/app/page.tsx","before":"export default function App() { return <div>Old</div>; }\\n","after":"export default function App() { return <div>Recovered</div>; }\\n"}]}'
                     )
                 },
             )()
@@ -478,7 +478,7 @@ def test_codegen_retries_raw_json_after_transport_failure() -> None:
     service = CodeGenerationService()
     context_snapshot = [
         WorkspaceFile(
-            path="src/App.tsx",
+            path="src/app/page.tsx",
             content="export default function App() { return <div>Old</div>; }\n",
         ),
     ]
@@ -504,7 +504,7 @@ def test_codegen_retries_raw_json_after_transport_failure() -> None:
                 {
                     "content": (
                         '{"assistantSummary":"transport 重试后恢复。","operations":'
-                        '[{"op":"patch","path":"src/App.tsx","before":"export default function App() { return <div>Old</div>; }\\n","after":"export default function App() { return <div>Retried</div>; }\\n"}]}'
+                        '[{"op":"patch","path":"src/app/page.tsx","before":"export default function App() { return <div>Old</div>; }\\n","after":"export default function App() { return <div>Retried</div>; }\\n"}]}'
                     )
                 },
             )()
@@ -521,7 +521,7 @@ def test_codegen_retries_structured_output_after_transport_failure(monkeypatch) 
     service = CodeGenerationService()
     context_snapshot = [
         WorkspaceFile(
-            path="src/App.tsx",
+            path="src/app/page.tsx",
             content="export default function App() { return <div>Old</div>; }\n",
         ),
     ]
@@ -541,7 +541,7 @@ def test_codegen_retries_structured_output_after_transport_failure(monkeypatch) 
                     "operations": [
                         {
                             "type": "patch",
-                            "path": "src/App.tsx",
+                            "path": "src/app/page.tsx",
                             "before": "export default function App() { return <div>Old</div>; }\n",
                             "after": "export default function App() { return <div>Structured</div>; }\n",
                         }
@@ -700,7 +700,7 @@ def test_codegen_preserves_model_output_for_fresh_app_when_transport_succeeds(mo
             operations=[
                 FileOperation(
                     type="write",
-                    path="src/App.tsx",
+                    path="src/app/page.tsx",
                     summary="写入占位页面。",
                     content="export default function App() { return <div>待实现</div>; }\n",
                 )
@@ -711,7 +711,7 @@ def test_codegen_preserves_model_output_for_fresh_app_when_transport_succeeds(mo
 
     next_state = service.generate(state, spec, [])
 
-    assert [operation.path for operation in next_state.file_operations] == ["src/App.tsx"]
+    assert [operation.path for operation in next_state.file_operations] == ["src/app/page.tsx"]
     assert next_state.file_operations[0].content == "export default function App() { return <div>待实现</div>; }\n"
     assert next_state.assistant_summary == "只返回了一个不完整的占位页面。"
 
@@ -735,27 +735,14 @@ def test_codegen_uses_staged_generation_for_fresh_app(monkeypatch) -> None:
                     summary="写入依赖配置",
                     content='{"name":"todo-lite"}\n',
                 ),
+                FileOperation(type="write", path="next.config.mjs", summary="写入 Next 配置", content="const nextConfig = {};\nexport default nextConfig;\n"),
+                FileOperation(type="write", path="tsconfig.json", summary="写入 TS 配置", content='{"compilerOptions":{"strict":true}}\n'),
+                FileOperation(type="write", path="next-env.d.ts", summary="写入 Next 类型", content='/// <reference types="next" />\n/// <reference types="next/image-types/global" />\n'),
+                FileOperation(type="write", path="src/app/layout.tsx", summary="写入根布局", content="import './globals.css';\nexport default function RootLayout({ children }: { children: React.ReactNode }) { return <html lang=\"zh-CN\"><body>{children}</body></html>; }\n"),
+                FileOperation(type="write", path="src/app/globals.css", summary="写入全局样式", content="body { margin: 0; }\n"),
                 FileOperation(
                     type="write",
-                    path="index.html",
-                    summary="写入 HTML 入口",
-                    content="<html><body><div id='root'></div></body></html>\n",
-                ),
-                FileOperation(
-                    type="write",
-                    path="src/main.tsx",
-                    summary="写入 React 入口",
-                    content="export {};\n",
-                ),
-                FileOperation(
-                    type="write",
-                    path="src/index.css",
-                    summary="写入全局样式",
-                    content="body { margin: 0; }\n",
-                ),
-                FileOperation(
-                    type="write",
-                    path="src/App.tsx",
+                    path="src/app/page.tsx",
                     summary="写入初始页面",
                     content="export default function App() { return <main>基础骨架</main>; }\n",
                 ),
@@ -770,7 +757,7 @@ def test_codegen_uses_staged_generation_for_fresh_app(monkeypatch) -> None:
             operations=[
                 FileOperation(
                     type="write",
-                    path="src/App.tsx",
+                    path="src/app/page.tsx",
                     summary="完善首页体验",
                     content="export default function App() { return <main>功能完善</main>; }\n",
                 )
@@ -783,15 +770,17 @@ def test_codegen_uses_staged_generation_for_fresh_app(monkeypatch) -> None:
     result = service._invoke_generation(state, spec, [])
 
     assert bootstrap_calls == [[]]
-    assert enrichment_calls == [["index.html", "package.json", "src/App.tsx", "src/index.css", "src/main.tsx"]]
+    assert enrichment_calls == [["next-env.d.ts", "next.config.mjs", "package.json", "src/app/globals.css", "src/app/layout.tsx", "src/app/page.tsx", "tsconfig.json"]]
     assert result.assistant_summary == "功能完善已完成。"
     assert [operation.path for operation in result.operations] == [
         "package.json",
-        "index.html",
-        "src/main.tsx",
-        "src/index.css",
-        "src/App.tsx",
-        "src/App.tsx",
+        "next.config.mjs",
+        "tsconfig.json",
+        "next-env.d.ts",
+        "src/app/layout.tsx",
+        "src/app/globals.css",
+        "src/app/page.tsx",
+        "src/app/page.tsx",
     ]
 
 
@@ -811,7 +800,7 @@ def test_codegen_retries_with_minimal_bootstrap_after_transport_failure(monkeypa
                 operations=[
                     FileOperation(
                         type="write",
-                        path="src/App.tsx",
+                        path="src/app/page.tsx",
                         summary="写入初始页面",
                         content="export default function App() { return <main>极简骨架</main>; }\n",
                     ),
@@ -843,7 +832,7 @@ def test_codegen_retries_with_minimal_bootstrap_after_wrapped_timeout_message(mo
             return GeneratedCodeOutput(
                 assistantSummary="极简骨架已完成。",
                 operations=[
-                    FileOperation(type="write", path="src/App.tsx", summary="写入初始页面", content="export default function App() { return <main>极简骨架</main>; }\n"),
+                    FileOperation(type="write", path="src/app/page.tsx", summary="写入初始页面", content="export default function App() { return <main>极简骨架</main>; }\n"),
                 ],
             )
 
@@ -873,7 +862,7 @@ def test_codegen_uses_single_pass_rescue_after_bootstrap_transport_exhaustion(mo
             operations=[
                 FileOperation(
                     type="write",
-                    path="src/App.tsx",
+                    path="src/app/page.tsx",
                     summary="写入 rescue 结果",
                     content="export default function App() { return <main>Rescue</main>; }\n",
                 )
@@ -888,7 +877,7 @@ def test_codegen_uses_single_pass_rescue_after_bootstrap_transport_exhaustion(mo
     assert bootstrap_calls == ["bootstrap", "bootstrap_minimal"]
     assert rescue_reasons == ["bootstrap_transport_failure"]
     assert result.assistant_summary == "single-pass rescue 成功。"
-    assert [operation.path for operation in result.operations] == ["src/App.tsx"]
+    assert [operation.path for operation in result.operations] == ["src/app/page.tsx"]
 
 
 def test_codegen_uses_single_pass_rescue_after_feature_enrichment_transport_failure(monkeypatch) -> None:
@@ -910,7 +899,7 @@ def test_codegen_uses_single_pass_rescue_after_feature_enrichment_transport_fail
                 ),
                 FileOperation(
                     type="write",
-                    path="src/App.tsx",
+                    path="src/app/page.tsx",
                     summary="写入初始页面",
                     content="export default function App() { return <main>基础骨架</main>; }\n",
                 ),
@@ -928,7 +917,7 @@ def test_codegen_uses_single_pass_rescue_after_feature_enrichment_transport_fail
             operations=[
                 FileOperation(
                     type="write",
-                    path="src/App.tsx",
+                    path="src/app/page.tsx",
                     summary="补齐最终页面",
                     content="export default function App() { return <main>Rescue 完成</main>; }\n",
                 )
@@ -942,9 +931,9 @@ def test_codegen_uses_single_pass_rescue_after_feature_enrichment_transport_fail
     result = service._invoke_staged_generation(state, spec, [])
 
     assert rescue_reasons == ["feature_enrichment_transport_failure"]
-    assert rescue_contexts == [["package.json", "src/App.tsx"]]
+    assert rescue_contexts == [["package.json", "src/app/page.tsx"]]
     assert result.assistant_summary == "功能完善 rescue 成功。"
-    assert [operation.path for operation in result.operations] == ["package.json", "src/App.tsx", "src/App.tsx"]
+    assert [operation.path for operation in result.operations] == ["package.json", "src/app/page.tsx", "src/app/page.tsx"]
 
 
 def test_codegen_uses_text_file_rescue_after_single_pass_rescue_transport_failure(monkeypatch) -> None:
@@ -972,7 +961,7 @@ def test_codegen_uses_text_file_rescue_after_single_pass_rescue_transport_failur
                     type="write",
                     path="package.json",
                     summary="写入依赖配置",
-                    content='{"name":"todo-lite","scripts":{"dev":"vite","build":"vite build","preview":"vite preview"},"dependencies":{"react":"^19.1.0","react-dom":"^19.1.0"},"devDependencies":{"vite":"^7.1.3","typescript":"^5.9.2","@vitejs/plugin-react":"^4.3.4"}}\n',
+                    content='{"name":"todo-lite","scripts":{"dev":"next dev","build":"next build","start":"next start"},"dependencies":{"next":"^14.2.25","react":"^18.3.1","react-dom":"^18.3.1"},"devDependencies":{"typescript":"^5.8.3","@types/node":"^20.17.17","@types/react":"^18.3.18","@types/react-dom":"^18.3.5"}}\n',
                 )
             ],
         )
@@ -996,13 +985,13 @@ def test_codegen_file_by_file_bootstrap_rescue_generates_required_files(monkeypa
     spec = _build_codegen_spec()
     requested_paths: list[str] = []
     file_contents = {
-        "package.json": '{\n  "name": "todo-lite",\n  "private": true,\n  "version": "0.0.0",\n  "type": "module",\n  "scripts": {\n    "dev": "vite",\n    "build": "vite build",\n    "preview": "vite preview"\n  },\n  "dependencies": {\n    "react": "^19.1.0",\n    "react-dom": "^19.1.0"\n  },\n  "devDependencies": {\n    "@vitejs/plugin-react": "^4.3.4",\n    "typescript": "^5.9.2",\n    "vite": "^7.1.3"\n  }\n}\n',
-        "tsconfig.json": '{\n  "compilerOptions": {\n    "target": "ES2020",\n    "useDefineForClassFields": true,\n    "lib": ["ES2020", "DOM", "DOM.Iterable"],\n    "module": "ESNext",\n    "skipLibCheck": true,\n    "moduleResolution": "Bundler",\n    "allowImportingTsExtensions": false,\n    "resolveJsonModule": true,\n    "isolatedModules": true,\n    "noEmit": true,\n    "jsx": "react-jsx",\n    "strict": true\n  },\n  "include": ["src"]\n}\n',
-        "vite.config.ts": "import { defineConfig } from 'vite';\nimport react from '@vitejs/plugin-react';\n\nexport default defineConfig({\n  plugins: [react()],\n});\n",
-        "index.html": "<!doctype html>\n<html lang=\"zh-CN\">\n  <head>\n    <meta charset=\"UTF-8\" />\n    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\" />\n    <title>待办清单</title>\n  </head>\n  <body>\n    <div id=\"root\"></div>\n    <script type=\"module\" src=\"/src/main.tsx\"></script>\n  </body>\n</html>\n",
-        "src/main.tsx": "import { StrictMode } from 'react';\nimport { createRoot } from 'react-dom/client';\nimport App from './App';\nimport './index.css';\n\ncreateRoot(document.getElementById('root')!).render(\n  <StrictMode>\n    <App />\n  </StrictMode>,\n);\n",
-        "src/index.css": ":root {\n  font-family: 'Noto Sans SC', system-ui, sans-serif;\n  color: #122033;\n  background: linear-gradient(180deg, #f7fbff 0%, #eef5ff 100%);\n}\n\n* {\n  box-sizing: border-box;\n}\n\nbody {\n  margin: 0;\n}\n",
-        "src/App.tsx": "import { useState } from 'react';\n\nconst initialTodos = [\n  { id: '1', title: '确认行程', done: false },\n  { id: '2', title: '预订住宿', done: true },\n];\n\nexport default function App() {\n  const [todos, setTodos] = useState(initialTodos);\n\n  return (\n    <main>\n      <h1>待办清单</h1>\n      <ul>\n        {todos.map((todo) => (\n          <li key={todo.id}>{todo.title}</li>\n        ))}\n      </ul>\n      <button type=\"button\" onClick={() => setTodos(todos)}>保持状态</button>\n    </main>\n  );\n}\n",
+        "package.json": '{\n  "name": "todo-lite",\n  "private": true,\n  "version": "0.0.0",\n  "type": "module",\n  "scripts": {\n    "dev": "next dev",\n    "build": "next build",\n    "start": "next start"\n  },\n  "dependencies": {\n    "next": "^14.2.25",\n    "react": "^18.3.1",\n    "react-dom": "^18.3.1"\n  },\n  "devDependencies": {\n    "@types/node": "^20.17.17",\n    "@types/react": "^18.3.18",\n    "@types/react-dom": "^18.3.5",\n    "typescript": "^5.8.3"\n  }\n}\n',
+        "next.config.mjs": "const nextConfig = {};\n\nexport default nextConfig;\n",
+        "tsconfig.json": '{\n  "compilerOptions": {\n    "target": "ES2022",\n    "lib": ["dom", "dom.iterable", "es2022"],\n    "allowJs": false,\n    "skipLibCheck": true,\n    "strict": true,\n    "noEmit": true,\n    "esModuleInterop": true,\n    "module": "esnext",\n    "moduleResolution": "bundler",\n    "resolveJsonModule": true,\n    "isolatedModules": true,\n    "jsx": "preserve",\n    "incremental": true\n  },\n  "include": ["next-env.d.ts", "**/*.ts", "**/*.tsx"],\n  "exclude": ["node_modules"]\n}\n',
+        "next-env.d.ts": "/// <reference types=\"next\" />\n/// <reference types=\"next/image-types/global\" />\n",
+        "src/app/layout.tsx": "import './globals.css';\n\nexport const metadata = { title: '待办清单' };\n\nexport default function RootLayout({ children }: { children: React.ReactNode }) {\n  return <html lang=\"zh-CN\"><body>{children}</body></html>;\n}\n",
+        "src/app/globals.css": ":root {\n  font-family: 'Noto Sans SC', system-ui, sans-serif;\n  color: #122033;\n  background: #f7fbff;\n}\n\n* {\n  box-sizing: border-box;\n}\n\nbody {\n  margin: 0;\n}\n",
+        "src/app/page.tsx": "const todos = [\n  { id: '1', title: '确认行程', done: false },\n  { id: '2', title: '预订住宿', done: true },\n];\n\nexport default function Page() {\n  return (\n    <main>\n      <h1>待办清单</h1>\n      <ul>\n        {todos.map((todo) => (\n          <li key={todo.id}>{todo.title}</li>\n        ))}\n      </ul>\n    </main>\n  );\n}\n",
     }
 
     monkeypatch.setattr(service.provider, "require_chat_model", lambda *args, **kwargs: object())
@@ -1022,12 +1011,12 @@ def test_codegen_file_by_file_bootstrap_rescue_generates_required_files(monkeypa
 
     assert requested_paths == [
         "package.json",
+        "next.config.mjs",
         "tsconfig.json",
-        "vite.config.ts",
-        "index.html",
-        "src/main.tsx",
-        "src/index.css",
-        "src/App.tsx",
+        "next-env.d.ts",
+        "src/app/layout.tsx",
+        "src/app/globals.css",
+        "src/app/page.tsx",
     ]
     assert [operation.path for operation in result.operations] == requested_paths
     assert result.assistant_summary == "已通过逐文件 LLM rescue 生成最小可运行版本。"
@@ -1040,9 +1029,9 @@ def test_codegen_uses_single_pass_when_foundational_files_exist(monkeypatch) -> 
     calls: list[str] = []
     context_snapshot = [
         WorkspaceFile(path="package.json", content='{"name":"demo"}\n'),
-        WorkspaceFile(path="index.html", content="<html></html>\n"),
-        WorkspaceFile(path="src/main.tsx", content="export {};\n"),
-        WorkspaceFile(path="src/App.tsx", content="export default function App() { return null; }\n"),
+        WorkspaceFile(path="src/app/layout.tsx", content="import './globals.css';\nexport default function RootLayout({ children }: { children: React.ReactNode }) { return <html><body>{children}</body></html>; }\n"),
+        WorkspaceFile(path="src/app/globals.css", content="body { margin: 0; }\n"),
+        WorkspaceFile(path="src/app/page.tsx", content="export default function App() { return null; }\n"),
     ]
 
     def fake_phase(*, state, spec, context_snapshot, phase_name, phase_brief, conversation_limit, spec_payload=None):
@@ -1052,7 +1041,7 @@ def test_codegen_uses_single_pass_when_foundational_files_exist(monkeypatch) -> 
             operations=[
                 FileOperation(
                     type="write",
-                    path="src/App.tsx",
+                    path="src/app/page.tsx",
                     summary="更新页面",
                     content="export default function App() { return <main>单轮生成</main>; }\n",
                 )
@@ -1079,7 +1068,7 @@ def test_codegen_can_use_json_schema_for_gpt5_structured_output() -> None:
                     "operations": [
                         {
                             "type": "write",
-                            "path": "src/App.tsx",
+                            "path": "src/app/page.tsx",
                             "summary": "写入页面",
                             "content": "export default function App() { return <main>OK</main>; }\n",
                         }
@@ -1132,7 +1121,7 @@ def test_codegen_extracts_responses_instructions_for_structured_calls() -> None:
                             "operations": [
                                 {
                                     "type": "write",
-                                    "path": "src/App.tsx",
+                                    "path": "src/app/page.tsx",
                                     "summary": "写入页面",
                                     "content": "export default function App() { return <main>Ready</main>; }\n",
                                 }
@@ -1200,7 +1189,7 @@ def test_codegen_prefers_chat_completion_clone_for_raw_responses_fallback() -> N
                 raise AssertionError("responses model should not be used for raw fallback")
             self.invoke_messages.append(messages)
             return FakeGeneratedResponse(
-                '{"assistantSummary":"chat fallback 成功","operations":[{"type":"write","path":"src/App.tsx","summary":"写入页面","content":"export default function App() { return <main>Ready</main>; }\\n"}]}'
+                '{"assistantSummary":"chat fallback 成功","operations":[{"type":"write","path":"src/app/page.tsx","summary":"写入页面","content":"export default function App() { return <main>Ready</main>; }\\n"}]}'
             )
 
     model = ChatFallbackModel()
@@ -1259,7 +1248,7 @@ def test_codegen_prefers_chat_completion_clone_for_text_rescue_fallback() -> Non
     model = ChatFallbackModel()
     messages = [
         SystemMessage(content="保持输出为完整文件内容。"),
-        HumanMessage(content="生成 src/App.tsx。"),
+        HumanMessage(content="生成 src/app/page.tsx。"),
     ]
 
     content = service._invoke_text_file_with_transport_retries(
@@ -1268,11 +1257,11 @@ def test_codegen_prefers_chat_completion_clone_for_text_rescue_fallback() -> Non
         state=None,
         invocation_kind="text_rescue_src_app_tsx",
         timeout_seconds=1,
-        target_path="src/App.tsx",
+        target_path="src/app/page.tsx",
     )
 
     assert "export default function App" in content
     assert model.fallback_model is not None
     assert model.fallback_model.use_responses_api is False
     assert model.fallback_model.output_version == "v0"
-    assert [message.content for message in model.fallback_model.invoke_messages[0]] == ["保持输出为完整文件内容。", "生成 src/App.tsx。"]
+    assert [message.content for message in model.fallback_model.invoke_messages[0]] == ["保持输出为完整文件内容。", "生成 src/app/page.tsx。"]
