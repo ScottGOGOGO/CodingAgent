@@ -25,6 +25,10 @@ export interface RuntimeConfig {
   agentMaxToolCallsTotal: number;
   /** Hard timeout for each tool-use model turn. */
   agentModelTurnTimeoutMs: number;
+  /** Skip final candidate validation so local runs can surface a candidate quickly. */
+  skipAcceptance: boolean;
+  /** Fail instead of swapping in generic/deterministic fallback candidates. */
+  strictGeneration: boolean;
   buildAttempts: number;
   previewPortBase: number;
 }
@@ -45,6 +49,14 @@ function envValue(env: NodeJS.ProcessEnv, key: string): string | undefined {
 
 function normalizeProvider(value?: string): string {
   return (value ?? "openai_compatible").trim().toLowerCase().replace(/-/g, "_");
+}
+
+function booleanEnvValue(env: NodeJS.ProcessEnv, key: string, fallback = false): boolean {
+  const value = envValue(env, key);
+  if (value === undefined) {
+    return fallback;
+  }
+  return /^(1|true|yes|on)$/i.test(value.trim());
 }
 
 export function loadRuntimeConfig(env: NodeJS.ProcessEnv = process.env): RuntimeConfig {
@@ -76,6 +88,7 @@ export function loadRuntimeConfig(env: NodeJS.ProcessEnv = process.env): Runtime
   const modelTimeoutMs = modelTimeoutSeconds > 0 ? modelTimeoutSeconds * 1000 : 0;
   const rawTurnTimeoutSeconds = Number(envValue(env, "AGENT_MODEL_TURN_TIMEOUT_SECONDS") ?? "90");
   const agentModelTurnTimeoutMs = rawTurnTimeoutSeconds > 0 ? rawTurnTimeoutSeconds * 1000 : 90_000;
+  const strictGeneration = booleanEnvValue(env, "AGENT_STRICT_GENERATION");
 
   return {
     provider,
@@ -90,7 +103,6 @@ export function loadRuntimeConfig(env: NodeJS.ProcessEnv = process.env): Runtime
       architect: firstPresent(envValue(env, "ARCHITECT_MODEL"), envValue(env, "PLANNER_MODEL"), modelName),
       coder: firstPresent(envValue(env, "CODER_MODEL"), modelName),
       critic: firstPresent(envValue(env, "CRITIC_MODEL"), modelName),
-      visual_critic: firstPresent(envValue(env, "VISUAL_CRITIC_MODEL"), envValue(env, "CRITIC_MODEL"), modelName),
       repairer: firstPresent(envValue(env, "REPAIRER_MODEL"), envValue(env, "CODER_MODEL"), modelName),
     },
     wireApi: envValue(env, "MODEL_WIRE_API") === "responses" ? "responses" : "chat_completions",
@@ -99,6 +111,8 @@ export function loadRuntimeConfig(env: NodeJS.ProcessEnv = process.env): Runtime
     agentMaxToolCallsPerTurn: Number(envValue(env, "AGENT_MAX_TOOL_CALLS_PER_TURN") ?? "6"),
     agentMaxToolCallsTotal: Number(envValue(env, "AGENT_MAX_TOOL_CALLS_TOTAL") ?? "300"),
     agentModelTurnTimeoutMs,
+    skipAcceptance: strictGeneration ? false : booleanEnvValue(env, "AGENT_SKIP_ACCEPTANCE"),
+    strictGeneration,
     buildAttempts: Number(envValue(env, "AGENT_BUILD_ATTEMPTS") ?? "2"),
     previewPortBase: Number(envValue(env, "PREVIEW_PORT_BASE") ?? "4173"),
   };

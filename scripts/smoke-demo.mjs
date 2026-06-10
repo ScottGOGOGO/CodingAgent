@@ -1,16 +1,19 @@
 #!/usr/bin/env node
 
-import { buildClarificationAnswers, SMOKE_CASES } from "./smoke-cases.mjs";
+import { buildClarificationAnswers, SMOKE_CASES, STRICT_FIVE_ROUND_CASES } from "./smoke-cases.mjs";
 import {
   api,
   assertProjectReady,
+  assertStrictProject,
   classifyFailure,
   fetchProject,
   READY_TIMEOUT_MS,
   REASONING_MODE,
   summarizeProject,
+  STRICT_SMOKE,
   TURN_TIMEOUT_MS,
   waitForProject,
+  isPassingSmokeResult,
 } from "./smoke-common.mjs";
 
 const SMOKE_CASE = process.env.SMOKE_CASE?.trim();
@@ -107,6 +110,7 @@ async function runCase(testCase) {
       READY_TIMEOUT_MS,
     );
     assertProjectReady(readyProject, testCase.name);
+    assertStrictProject(readyProject, testCase.name);
     console.log(JSON.stringify(summarizeProject("after_confirm", testCase.name, readyProject), null, 2));
     return summarizeProject("after_confirm", testCase.name, readyProject);
   } catch (error) {
@@ -137,18 +141,25 @@ async function runCase(testCase) {
 }
 
 async function main() {
-  const activeCases = SMOKE_CASE ? SMOKE_CASES.filter((testCase) => testCase.name === SMOKE_CASE) : SMOKE_CASES;
+  const sourceCases = STRICT_SMOKE ? STRICT_FIVE_ROUND_CASES : SMOKE_CASES;
+  const activeCases = SMOKE_CASE ? sourceCases.filter((testCase) => testCase.name === SMOKE_CASE || testCase.baseName === SMOKE_CASE) : sourceCases;
   if (!activeCases.length) {
     throw new Error(`Unknown SMOKE_CASE: ${SMOKE_CASE}`);
   }
 
   const results = [];
   for (const testCase of activeCases) {
-    results.push(await runCase(testCase));
+    const result = await runCase(testCase);
+    results.push(result);
+    if (STRICT_SMOKE && !isPassingSmokeResult(result)) {
+      console.log(`FINAL_RESULTS=${JSON.stringify(results)}`);
+      process.exitCode = 1;
+      return;
+    }
   }
 
   console.log(`FINAL_RESULTS=${JSON.stringify(results)}`);
-  const hasFailure = results.some((result) => result.status !== "ready" || result.previewStatus !== "ready");
+  const hasFailure = results.some((result) => !isPassingSmokeResult(result));
   process.exitCode = hasFailure ? 1 : 0;
 }
 

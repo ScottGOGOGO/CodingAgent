@@ -32,15 +32,19 @@ export type RunPhase =
   | "architect"
   | "tool_loop"
   | "sandbox_verify"
-  | "screenshot"
-  | "visual_review"
   | "repair"
   | "approval"
   | "promote"
   | "preview"
   | "report";
 
-export type AgentTaskStatus = "pending" | "running" | "completed" | "failed" | "blocked";
+export type GenerationFailureKind =
+  | "model_call_failed"
+  | "generation_incomplete"
+  | "build_failed"
+  | "preview_failed";
+
+export type AgentTaskStatus = "pending" | "running" | "completed" | "failed" | "blocked" | "stopped";
 
 export interface ChatMessage {
   id: string;
@@ -88,7 +92,6 @@ export interface AgentTask {
     | "architect"
     | "coder"
     | "critic"
-    | "visual_critic"
     | "repairer"
     | "runtime";
   status: AgentTaskStatus;
@@ -311,24 +314,6 @@ export interface ArchitecturePlan {
   createdAt: string;
 }
 
-export interface VisualReview {
-  id: string;
-  runId: string;
-  status: "passed" | "failed";
-  score: number;
-  summary: string;
-  /** All critic findings, including non-blocking warnings. */
-  issues: string[];
-  /** Findings severe enough to block candidate submission and trigger repair. */
-  blockingIssues?: string[];
-  /** Non-blocking review notes that should be surfaced without failing the run. */
-  warnings?: string[];
-  repairInstructions: string[];
-  screenshotPath?: string;
-  screenshotSummary?: string;
-  createdAt: string;
-}
-
 export interface ToolCallTrace {
   id: string;
   runId: string;
@@ -341,6 +326,14 @@ export interface ToolCallTrace {
   outputSummary?: string;
   error?: string;
   sandboxOnly: boolean;
+  category?: string;
+  permission?: string;
+  sideEffects?: string;
+  riskLevel?: string;
+  phase?: string;
+  taskId?: string;
+  artifactIds?: string[];
+  errorKind?: string;
 }
 
 export interface CandidateValidation {
@@ -349,6 +342,7 @@ export interface CandidateValidation {
   summary: string;
   warnings?: string[];
   logTail?: string;
+  failureKind?: GenerationFailureKind;
 }
 
 export interface ChangedFile {
@@ -399,9 +393,9 @@ export interface SessionState {
   designBrief?: DesignBrief;
   designSeed?: DesignSeed;
   architecturePlan?: ArchitecturePlan;
-  visualReview?: VisualReview;
   candidate?: CandidateChangeSet;
   error?: string;
+  failureKind?: GenerationFailureKind;
   createdAt: string;
   updatedAt: string;
 }
@@ -418,11 +412,11 @@ export interface RunRecord {
   designBrief?: DesignBrief;
   designSeed?: DesignSeed;
   architecturePlan?: ArchitecturePlan;
-  visualReview?: VisualReview;
   candidate?: CandidateChangeSet;
   tasks: AgentTask[];
   toolCalls: ToolCallTrace[];
   error?: string;
+  failureKind?: GenerationFailureKind;
   createdAt: string;
   updatedAt: string;
 }
@@ -472,7 +466,6 @@ export interface ProjectEvent {
     run?: RunRecord;
     candidate?: CandidateChangeSet;
     designBrief?: DesignBrief;
-    visualReview?: VisualReview;
     toolCall?: ToolCallTrace;
     task?: AgentTask;
     message?: string;

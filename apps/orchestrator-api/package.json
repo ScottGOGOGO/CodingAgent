@@ -8,7 +8,7 @@
     "dev": "npm --workspace @vide/agent-runtime run build && npm --workspace @vide/orchestrator-api run dev:prepared",
     "dev:prepared": "tsx watch --exclude '../../packages/agent-runtime/dist/**' --exclude '../../packages/contracts/dist/**' src/index.ts",
     "start": "node dist/index.js",
-    "test": "npm --workspace @vide/agent-runtime run build && node --import tsx --test src/**/*.test.ts",
+    "test": "npm --workspace @vide/agent-runtime run build && node --import tsx --test src/*.test.ts src/**/*.test.ts",
     "typecheck": "npm --workspace @vide/agent-runtime run build && tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {

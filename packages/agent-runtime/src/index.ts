@@ -5,7 +5,10 @@ export {
   type ArchitecturePlanDraft,
   type CriticResult,
   type DesignSeedDraft,
+  createExperienceBlueprint,
+  formatExperienceBlueprintForPrompt,
   type GeneratedApp,
+  type ExperienceBlueprint,
   type GeneratedFile,
 } from "./expert-router.js";
 export {
@@ -25,7 +28,6 @@ export {
   composeDesignDirectorPrompt,
   composeDesignSeedPrompt,
   composeRepairPrompt,
-  composeVisualCriticPrompt,
   formatArchitecturePlanForPrompt,
   formatDesignBriefForPrompt,
   formatDesignSeedForPrompt,
@@ -36,7 +38,6 @@ export {
   type DesignSeedPromptInput,
   type PromptOverrides,
   type PromptSection,
-  type VisualCriticPromptInput,
 } from "./prompt-composer.js";
 export {
   AgentCoderLoop,
@@ -53,19 +54,41 @@ export {
   type QueryEngineHooks,
   type QueryEngineInput,
   type QueryEngineResult,
+  type ToolRuntimeAdapters,
 } from "./query-engine.js";
 export { SandboxWorkspace, type WorkspaceFile } from "./sandbox.js";
+export { safePreviewPort, isBrowserSafePort } from "./visual-preview.js";
 export {
-  NoopVisualPreviewer,
-  PlaywrightVisualPreviewer,
-  type VisualPreviewer,
-  type VisualSnapshot,
-} from "./visual-preview.js";
-export {
+  InMemoryArtifactStore,
+  InMemoryTaskStore,
+  ObservableTaskStore,
   ToolRegistry,
   createDefaultToolRegistry,
   isAllowedAgentCommand,
+  type AgentPhase,
+  type ArtifactStore,
+  type JsonSchema,
+  type RuntimeCapabilities,
+  type McpResourceSummary,
+  type McpToolAdapter,
+  type PlanModeState,
+  type SkillPackManifest,
+  type SubAgentRunRequest,
+  type SubAgentRunResult,
+  type SubAgentRunner,
+  type TaskRecord,
+  type TaskStore,
   type ToolDefinition,
+  type ToolCategory,
   type ToolExecutionContext,
+  type ToolManifest,
   type ToolPermission,
+  type ToolPolicy,
+  type ToolRiskLevel,
+  type ToolSideEffect,
+  type ToolTrace,
+  type WebFetchRequest,
+  type WebFetchResult,
+  type WebSearchResultItem,
+  type WebToolAdapter,
 } from "./tools.js";

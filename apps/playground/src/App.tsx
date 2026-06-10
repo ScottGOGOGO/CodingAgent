@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { AgentTask, ChatMessage, ClarificationAnswer, ProjectStatus, RunPhase, RunRecord, RunStatus } from "@vide/contracts";
+import type { AgentTask, ChatMessage, ClarificationAnswer, ProjectStatus, RunPhase, RunRecord, RunStatus, ToolCallTrace } from "@vide/contracts";
 
 import { useProject } from "./hooks/useProject.js";
 
@@ -23,8 +23,6 @@ const PHASE_LABELS: Record<RunPhase, string> = {
   architect: "Architect",
   tool_loop: "Tool loop",
   sandbox_verify: "Verify",
-  screenshot: "Screenshot",
-  visual_review: "Visual review",
   repair: "Repair",
   approval: "Approval",
   promote: "Promote",
@@ -54,9 +52,7 @@ const PHASE_PROGRESS: Record<RunPhase, { title: string; detail: string }> = {
   architect: { title: "规划工程架构", detail: "拆解文件结构、数据模型、组件树和按依赖排序的任务列表。" },
   tool_loop: { title: "迭代生成应用文件", detail: "Coder 按架构任务表逐步读写文件并校验构建，直至全部完成。" },
   sandbox_verify: { title: "沙箱构建验收", detail: "安装依赖并运行构建，拦截类型和打包问题。" },
-  screenshot: { title: "捕获移动端截图", detail: "启动候选预览并记录手机视口证据。" },
-  visual_review: { title: "视觉验收", detail: "检查首屏、布局、内容质量和移动端可用性。" },
-  repair: { title: "修复候选版本", detail: "根据构建或视觉问题自动返工候选文件。" },
+  repair: { title: "修复候选版本", detail: "根据构建或工程审计问题自动返工候选文件。" },
   approval: { title: "等待审批", detail: "候选版本已通过验收，可以预览和确认发布。" },
   promote: { title: "发布候选版本", detail: "把通过验收的沙箱快照推广到项目工作区。" },
   preview: { title: "启动正式预览", detail: "安装正式工作区依赖并启动可访问预览。" },
@@ -74,8 +70,6 @@ const PHASE_ORDER: RunPhase[] = [
   "tool_loop",
   "sandbox_verify",
   "repair",
-  "screenshot",
-  "visual_review",
   "approval",
   "promote",
   "preview",
@@ -91,7 +85,6 @@ const PROGRESS_STEPS: Array<{ phase: RunPhase; label: string }> = [
   { phase: "tool_loop", label: "生成" },
   { phase: "sandbox_verify", label: "构建" },
   { phase: "repair", label: "修复" },
-  { phase: "visual_review", label: "验收" },
   { phase: "approval", label: "审批" },
 ];
 
@@ -104,9 +97,40 @@ const TASK_OWNER_PHASE: Record<AgentTask["owner"], RunPhase> = {
   architect: "architect",
   coder: "tool_loop",
   critic: "sandbox_verify",
-  visual_critic: "visual_review",
   repairer: "repair",
-  runtime: "screenshot",
+  runtime: "sandbox_verify",
+};
+
+const VISIBLE_TOOL_NAMES = new Set([
+  "web_fetch",
+  "web_search",
+  "agent_tool",
+  "task_create",
+  "task_update",
+  "task_output",
+  "send_message",
+  "list_mcp_resources",
+  "read_mcp_resource",
+  "tool_search",
+]);
+
+const TOOL_LABELS: Record<string, { title: string; action: string }> = {
+  web_fetch: { title: "网页读取", action: "正在读取网页" },
+  web_search: { title: "联网搜索", action: "正在搜索网页" },
+  agent_tool: { title: "子任务", action: "正在派发子 Agent" },
+  task_create: { title: "任务创建", action: "正在创建任务" },
+  task_update: { title: "任务更新", action: "正在更新任务" },
+  task_output: { title: "任务输出", action: "正在读取任务输出" },
+  send_message: { title: "Agent 通信", action: "正在同步消息" },
+  list_mcp_resources: { title: "资源列表", action: "正在列出资源" },
+  read_mcp_resource: { title: "资源读取", action: "正在读取资源" },
+  tool_search: { title: "工具检索", action: "正在检索可用工具" },
+};
+
+const TOOL_STATUS_LABELS: Record<ToolCallTrace["status"], string> = {
+  started: "进行中",
+  completed: "已完成",
+  failed: "失败",
 };
 
 function formatTime(timestamp: string) {
@@ -125,12 +149,98 @@ function formatDuration(ms: number) {
 }
 
 function compactLogLine(log?: string) {
-  return (log ?? "")
+  const lines = (log ?? "")
     .split(/\r?\n/)
     .map((line) => line.trim())
-    .filter(Boolean)
-    .at(-1)
-    ?.slice(0, 140);
+    .filter(Boolean);
+  const actionable = [...lines].reverse().find((line) =>
+    /error|failed|module not found|can't resolve|preview server returned|build failed|failed to compile/i.test(line),
+  );
+  return (actionable ?? lines.at(-1))?.slice(0, 180);
+}
+
+function visibleToolCalls(run: RunRecord): ToolCallTrace[] {
+  const visible = run.toolCalls.filter((toolCall) => VISIBLE_TOOL_NAMES.has(toolCall.toolName) || toolCall.permission === "network" || toolCall.category === "task");
+  const source = visible.length ? visible : run.toolCalls;
+  return source.slice(-5).reverse();
+}
+
+function toolDisplay(toolCall: ToolCallTrace) {
+  const label = TOOL_LABELS[toolCall.toolName] ?? {
+    title: toolCall.toolName.replace(/_/g, " "),
+    action: "正在调用工具",
+  };
+  const target = toolTarget(toolCall);
+  const result = toolResult(toolCall);
+  return { ...label, target, result };
+}
+
+function toolTarget(toolCall: ToolCallTrace) {
+  const input = toolCall.inputSummary ?? "";
+  if (toolCall.toolName === "web_fetch") {
+    return input.replace(/^GET\s+/i, "").replace(/^POST\s+/i, "");
+  }
+  if (toolCall.toolName === "web_search") {
+    return input ? `“${input}”` : "搜索查询";
+  }
+  if (toolCall.toolName === "agent_tool") {
+    return input || "受限子任务";
+  }
+  return input || toolCall.category || "工具调用";
+}
+
+function toolResult(toolCall: ToolCallTrace) {
+  if (toolCall.status === "started") {
+    return TOOL_LABELS[toolCall.toolName]?.action ?? "正在调用工具";
+  }
+  if (toolCall.status === "failed") {
+    return toolCall.error ? `失败：${toolCall.error.slice(0, 120)}` : "调用失败";
+  }
+  if (toolCall.outputSummary) {
+    if (toolCall.toolName === "web_search") {
+      return toolCall.outputSummary.replace(/^(\d+)\s+results?:/i, "$1 条结果：").replace(/^0\s+results$/i, "0 条结果");
+    }
+    if (toolCall.toolName === "web_fetch") {
+      return toolCall.outputSummary.replace(/;\s+(\d+)\s+chars/i, "，$1 字符");
+    }
+    return toolCall.outputSummary;
+  }
+  return "已完成";
+}
+
+function ToolActivityPanel({ run }: { run: RunRecord }) {
+  const tools = visibleToolCalls(run);
+  if (!tools.length) {
+    return null;
+  }
+  return (
+    <div className="tool-activity" aria-label="Tool activity">
+      <div className="tool-activity-heading">
+        <span>工具调用</span>
+        <strong>{run.toolCalls.length} 次调用</strong>
+      </div>
+      <div className="tool-activity-list">
+        {tools.map((toolCall) => {
+          const display = toolDisplay(toolCall);
+          return (
+            <article key={toolCall.id} className={`tool-activity-item tool-activity-${toolCall.status}`}>
+              <div className="tool-icon" aria-hidden="true">
+                {toolCall.toolName === "web_search" ? "S" : toolCall.toolName === "web_fetch" ? "W" : "T"}
+              </div>
+              <div>
+                <div className="tool-title-row">
+                  <strong>{display.title}</strong>
+                  <span>{TOOL_STATUS_LABELS[toolCall.status]}</span>
+                </div>
+                <p>{display.target}</p>
+                <small>{display.result}</small>
+              </div>
+            </article>
+          );
+        })}
+      </div>
+    </div>
+  );
 }
 
 function phaseIndex(phase: RunPhase) {
@@ -235,6 +345,8 @@ function RunProgressPanel({ run, logs }: { run?: RunRecord; logs: string[] }) {
         {recentTool ? <span>{`${recentTool.toolName} · ${recentTool.status}`}</span> : null}
         {latestLog ? <code>{latestLog}</code> : null}
       </div>
+
+      <ToolActivityPanel run={run} />
     </section>
   );
 }
@@ -553,6 +665,13 @@ export default function App() {
               <div className="iphone-screen">
                 {previewUrl ? (
                   <iframe data-testid="preview-frame" title="Generated preview" src={previewUrl} />
+                ) : project?.preview.status === "error" ? (
+                  <div className="preview-empty preview-error-state" data-testid="preview-error">
+                    <span />
+                    <strong>Preview failed</strong>
+                    <p>{compactLogLine(project.preview.lastLog) ?? "The candidate preview could not start. Check the build log for details."}</p>
+                    {project.preview.lastLog ? <pre>{project.preview.lastLog.slice(-1200)}</pre> : null}
+                  </div>
                 ) : (
                   <div className="preview-empty">
                     <span />

@@ -48,6 +48,7 @@ export const IMPORT_DEPENDENCY_VERSIONS: Record<string, string> = {
 };
 
 const NODE_BUILTIN_PREFIXES = new Set(["node:", "fs", "path", "crypto", "url", "util", "os", "stream", "buffer"]);
+const FRAMEWORK_IMPLICIT_PACKAGES = new Set(["server-only"]);
 
 export function normalizeCorePackageJson(packageJson: PackageJsonShape): PackageJsonShape {
   return {
@@ -107,6 +108,7 @@ export function collectMissingImportDependencies(
   ]);
   return [...collectImportedPackages(files)]
     .filter((packageName) => Boolean(IMPORT_DEPENDENCY_VERSIONS[packageName]))
+    .filter((packageName) => !FRAMEWORK_IMPLICIT_PACKAGES.has(packageName))
     .filter((packageName) => !declared.has(packageName))
     .sort();
 }

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type {
   AgentTask,
   ClarificationAnswer,
@@ -162,11 +162,26 @@ function applyIncrementalEvent(current: ProjectRecord | null, event: ProjectEven
   };
 }
 
+function isProjectActivelyUpdating(project: ProjectRecord) {
+  const runStatus = project.latestRun?.status;
+  return (
+    (runStatus ? ACTIVE_RUN_STATUSES.has(runStatus) : false) ||
+    ACTIVE_PREVIEW_STATUSES.has(project.preview.status) ||
+    project.status === "running" ||
+    project.status === "promoting"
+  );
+}
+
 export function useProject() {
   const [project, setProject] = useState<ProjectRecord | null>(null);
   const [logs, setLogs] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const latestProjectRef = useRef<ProjectRecord | null>(null);
+
+  useEffect(() => {
+    latestProjectRef.current = project;
+  }, [project]);
 
   useEffect(() => {
     let cancelled = false;
@@ -223,7 +238,10 @@ export function useProject() {
     ].forEach((eventName) => source.addEventListener(eventName, handleProjectEvent as EventListener));
 
     source.onerror = () => {
-      setLogs((current) => [...current.slice(-99), "SSE disconnected, waiting for reconnect..."]);
+      const currentProject = latestProjectRef.current;
+      if (currentProject?.id === project.id && isProjectActivelyUpdating(currentProject)) {
+        setLogs((current) => [...current.slice(-99), "SSE disconnected, waiting for reconnect..."]);
+      }
       void refreshProject(project.id);
     };
 
@@ -236,13 +254,7 @@ export function useProject() {
     if (!project?.id) {
       return;
     }
-    const runStatus = project.latestRun?.status;
-    const shouldPoll =
-      (runStatus && ACTIVE_RUN_STATUSES.has(runStatus)) ||
-      ACTIVE_PREVIEW_STATUSES.has(project.preview.status) ||
-      project.status === "running" ||
-      project.status === "promoting";
-    if (!shouldPoll) {
+    if (!isProjectActivelyUpdating(project)) {
       return;
     }
     const interval = window.setInterval(() => {

@@ -1,13 +1,15 @@
 import { expect, test } from "@playwright/test";
 
-import { buildClarificationReplyText, SMOKE_CASES } from "../../scripts/smoke-cases.mjs";
+import { buildClarificationReplyText, SMOKE_CASES, STRICT_FIVE_ROUND_CASES } from "../../scripts/smoke-cases.mjs";
 import {
   API_BASE,
   assertProjectReady,
+  assertStrictProject,
   classifyFailure,
   POLL_INTERVAL_MS,
   READY_TIMEOUT_MS,
   summarizeProject,
+  STRICT_SMOKE,
   TURN_TIMEOUT_MS,
 } from "../../scripts/smoke-common.mjs";
 
@@ -140,6 +142,23 @@ async function expectUiStatus(page, expectedLabel) {
     .toBe(expectedLabel);
 }
 
+async function assertPreviewFrameIsCommercial(page, testCaseName) {
+  const frameLocator = page.frameLocator('[data-testid="preview-frame"]');
+  const body = frameLocator.locator("body");
+  await expect(body).toBeVisible({ timeout: 30000 });
+  const text = ((await body.innerText({ timeout: 30000 })) ?? "").replace(/\s+/g, " ").trim();
+  if (text.length < 120) {
+    throw new Error(`Preview for ${testCaseName} looks blank or too thin: ${text}`);
+  }
+  if (/TODO|lorem ipsum|coming soon|\bdemo\b|\bsample\b|Next\.js|App Router|Prisma|生成的应用|技术栈|沙箱|fallback/i.test(text)) {
+    throw new Error(`Preview for ${testCaseName} contains forbidden placeholder/internal copy: ${text.slice(0, 500)}`);
+  }
+  const controls = await frameLocator.locator("button,a,input,textarea,select").count();
+  if (controls < 3) {
+    throw new Error(`Preview for ${testCaseName} has too few interactive controls: ${controls}`);
+  }
+}
+
 async function completeClarification(page, request, projectId, project, caseName) {
   let currentProject = project;
 
@@ -216,12 +235,16 @@ async function runSmokeCase(page, request, testInfo, testCase) {
       READY_TIMEOUT_MS,
     );
     assertProjectReady(readyProject, testCase.name);
+    assertStrictProject(readyProject, testCase.name);
     console.log(JSON.stringify(summarizeProject("ui_after_confirm", testCase.name, readyProject), null, 2));
 
     await expectUiStatus(page, STATUS_LABELS.ready);
     await expect(page.getByTestId("preview-badge")).toHaveText("ready");
     await expect(page.getByTestId("preview-frame")).toBeVisible();
     await expect(page.getByTestId("preview-frame")).toHaveAttribute("src", /http/);
+    if (STRICT_SMOKE) {
+      await assertPreviewFrameIsCommercial(page, testCase.name);
+    }
 
     approvalProject = readyProject;
     return approvalProject;
@@ -231,7 +254,9 @@ async function runSmokeCase(page, request, testInfo, testCase) {
   }
 }
 
-for (const testCase of SMOKE_CASES) {
+const activeSmokeCases = STRICT_SMOKE ? STRICT_FIVE_ROUND_CASES : SMOKE_CASES;
+
+for (const testCase of activeSmokeCases) {
   test(`${testCase.name} reaches ready preview in Playground`, async ({ page, request }, testInfo) => {
     test.setTimeout(TEST_TIMEOUT_MS);
     await runSmokeCase(page, request, testInfo, testCase);

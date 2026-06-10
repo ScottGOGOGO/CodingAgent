@@ -46,6 +46,8 @@ CODEGEN_PHASE_TIMEOUT_SECONDS = {
 }
 logger = logging.getLogger("vide.agent.stages")
 
+NEXT_REQUIRED_PATHS = {"package.json", "src/app/layout.tsx", "src/app/page.tsx", "src/app/globals.css"}
+
 
 class CodeGenerationService:
     def __init__(self) -> None:
@@ -214,7 +216,8 @@ class CodeGenerationService:
                 phase_brief=(
                     "This is phase 1 of 2 for a fresh or incomplete app. "
                     "The selected workspace may be empty or missing foundational files. "
-                    "Create every file required for a runnable React + Vite TypeScript app in this phase, including any missing package metadata, HTML entry, TypeScript config, React entry files, and the first polished user-facing screen. "
+                    "Create every file required for a runnable lightweight Next.js 14 App Router TypeScript app in this phase, including any missing package metadata, Next config, TypeScript config, root layout, app page, global styles, typed seed data when useful, and the first polished user-facing screen. "
+                    "Add server data/API/action files only when the brief explicitly requires server behavior. "
                     "Do not assume any scaffold already exists. "
                     "Keep the file set lean, but make sure npm install && npm run build can succeed after this phase."
                 ),
@@ -239,7 +242,7 @@ class CodeGenerationService:
                 phase_name="bootstrap_minimal",
                 phase_brief=(
                     "This is a retry for phase 1 after a transport failure. "
-                    "Return the smallest complete React + Vite TypeScript app that can install and build successfully. "
+                    "Return the smallest complete Next.js 14 App Router TypeScript app that can install and build successfully. "
                     "Include the minimal required foundation files plus one polished primary screen. "
                     "Avoid optional routes, utilities, hooks, stores, and extra dependencies unless they are essential."
                 ),
@@ -315,7 +318,7 @@ class CodeGenerationService:
             phase_brief=(
                 "This is a rescue single-pass generation after staged transport failures. "
                 f"Rescue reason: {rescue_reason}. "
-                "Produce the smallest complete React + Vite TypeScript implementation that is runnable, visually coherent, and ready for verification. "
+                "Produce the smallest complete Next.js App Router TypeScript implementation that is runnable, visually coherent, and ready for verification. "
                 "Prefer a compact operation set and avoid optional expansion unless it is required for a complete user flow."
             ),
             conversation_limit=4,
@@ -376,7 +379,7 @@ class CodeGenerationService:
             [
                 (
                     "system",
-                    "You are generating production-ready React + Vite TypeScript code. "
+                    "You are generating production-ready lightweight Next.js App Router TypeScript code for Vercel. "
                     "Prefer patch-first editing for existing files: use type=patch with small hunks whenever possible. "
                     "Use type=write for new files or when a patch would be unsafe. "
                     "Use type=delete only when a file is clearly obsolete. "
@@ -384,17 +387,19 @@ class CodeGenerationService:
                     "Do not ship placeholder, stub, or TODO screens. Avoid text such as 待实现, placeholder, coming soon, lorem ipsum, or empty route shells. "
                     "If a real media asset is unavailable, render a styled poster, diagram, or descriptive card instead of telling the user it is a placeholder or would be implemented later. "
                     "You are free to choose the UI approach and component stack that best fits the brief. "
-                    "Tailwind CSS, Radix UI primitives, shadcn/ui-style local components, Framer Motion, React Router, lucide-react, Zustand, TanStack Query, clsx, tailwind-merge, and similar lightweight React ecosystem tools are allowed when they materially improve the result. "
+                    "Tailwind CSS, Radix UI primitives, shadcn/ui-style local components, Framer Motion, lucide-react, zod, Prisma, clsx, tailwind-merge, and similar lightweight React/Next ecosystem tools are allowed when they materially improve the result. "
                     "Use the smallest dependency set that meaningfully helps the app. "
+                    "Default to a compact file tree: one strong App Router route, route-equivalent tabs or sections when enough, typed seed data in src/lib when useful, and browser/local component state for user-owned drafts or saved items. "
+                    "Do not add Prisma, DATABASE_URL, auth, Server Actions, API routes, external SDKs, or multi-route scaffolding unless the user brief explicitly requires durable server persistence, login, admin/backend workflows, real integrations, or addressable detail URLs. "
                     "If you use Tailwind utility classes, @tailwind directives, or @apply, you must also add the complete Tailwind toolchain and config files in the same response. "
                     "Assume the automatic JSX runtime is enabled, so do not import React by default unless you need React namespace APIs such as React.useState. "
                     "Avoid introducing unused imports, unused variables, unused functions, or unused useState setters. "
                     "If only the state value is used, destructure useState as [value] instead of [value, setValue]. "
                     "Do not leave code comments that describe unfinished UI as placeholder or TODO. "
-                    "At least one primary route must render a fully designed screen with real sections, realistic sample content, clear hierarchy, and visible interaction feedback that reflect the spec and designTargets. "
+                    "At least one primary App Router page must render a fully designed screen with real sections, server-loaded or seed-backed content, clear hierarchy, and visible interaction feedback that reflect the spec and designTargets. "
                     "Avoid generic template output that ignores the actual product domain or designTargets, but do not force every app into one house style. "
                     "Let the visual language, layout rhythm, and component choices follow the brief rather than a fixed template recipe. "
-                    "Do not introduce a framework or runtime outside React + Vite TypeScript. "
+                    "Do not introduce Vite, the legacy Pages Router, React Router, or a framework outside Next.js App Router TypeScript. "
                     "Every local import you reference must either already exist in the selected workspace context or be created/updated in this same response. "
                     "Do not import missing local components, pages, hooks, utils, or stylesheets. "
                     "Do not return partial file fragments in content. "
@@ -404,7 +409,7 @@ class CodeGenerationService:
                     "Return valid JSON only with keys assistantSummary and operations. "
                     "Each operation must contain type, path, summary, and either content or hunks when required. "
                     "Patch hunks must contain search, replace, and optional occurrence. "
-                    "The result must build with npm install && npm run build and run with npm run dev.",
+                    "The result must build with npm install && npm run build and run with npm run dev. package.json build must use next build.",
                 ),
                 (
                     "human",
@@ -427,7 +432,7 @@ class CodeGenerationService:
             [
                 (
                     "system",
-                    "You are a coding model. Return only the final TSX contents of src/App.tsx.",
+                    "You are a coding model. Return only the final TSX contents of src/app/page.tsx.",
                 ),
                 (
                     "human",
@@ -444,7 +449,7 @@ class CodeGenerationService:
             [
                 (
                     "system",
-                    "You are generating exactly one complete file for a React + Vite TypeScript app rescue. "
+                    "You are generating exactly one complete file for a Next.js App Router TypeScript app rescue. "
                     "Return only the final contents of the requested file. "
                     "Do not wrap the answer in Markdown fences, backticks, or explanations. "
                     "If the target file is JSON, return strict valid JSON only. "
@@ -471,67 +476,58 @@ class CodeGenerationService:
                 "summary": "写入最小依赖与脚本",
                 "role": "Package manifest",
                 "requirements": (
-                    "Return a minimal valid package.json for a React + Vite TypeScript app. "
-                    "Include scripts dev, build, and preview. "
-                    "Include dependencies react and react-dom. "
-                    "Include devDependencies vite, typescript, and @vitejs/plugin-react. "
+                    "Return a minimal valid package.json for a Next.js App Router TypeScript app. "
+                    "Include scripts dev, build, and start where dev is next dev and build is next build. "
+                    "Include dependencies next, react, and react-dom. "
+                    "Include devDependencies typescript, @types/node, @types/react, and @types/react-dom. "
                     "Keep versions modern and compatible."
                 ),
+            },
+            {
+                "path": "next.config.mjs",
+                "summary": "写入 Next.js 配置",
+                "role": "Next.js config",
+                "requirements": "Return a complete minimal next.config.mjs using an exported nextConfig object.",
             },
             {
                 "path": "tsconfig.json",
                 "summary": "写入 TypeScript 配置",
                 "role": "TypeScript config",
                 "requirements": (
-                    "Return a minimal valid tsconfig.json suitable for a React + Vite TypeScript app. "
-                    "Enable modern ES modules, JSX support, DOM libs, and bundler-style module resolution."
+                    "Return a minimal valid tsconfig.json suitable for a Next.js App Router TypeScript app. "
+                    "Enable strict mode, DOM libs, jsx preserve, moduleResolution bundler, and include next-env.d.ts."
                 ),
             },
             {
-                "path": "vite.config.ts",
-                "summary": "写入 Vite 配置",
-                "role": "Vite config",
-                "requirements": (
-                    "Return a complete vite.config.ts that uses defineConfig and @vitejs/plugin-react. "
-                    "Keep the config minimal."
-                ),
+                "path": "next-env.d.ts",
+                "summary": "写入 Next 类型声明",
+                "role": "Next ambient types",
+                "requirements": "Return the standard next-env.d.ts references for next and next/image-types/global.",
             },
             {
-                "path": "index.html",
-                "summary": "写入 HTML 入口",
-                "role": "HTML entry file",
-                "requirements": (
-                    "Return a complete index.html for a Vite app. "
-                    "Include a root div with id root and a title aligned with the app brief."
-                ),
+                "path": "src/app/layout.tsx",
+                "summary": "写入根布局",
+                "role": "Root App Router layout",
+                "requirements": "Return a complete src/app/layout.tsx that imports ./globals.css, exports metadata, and renders html/body/children.",
             },
             {
-                "path": "src/main.tsx",
-                "summary": "写入 React 入口",
-                "role": "React entry file",
-                "requirements": (
-                    "Return a complete src/main.tsx that imports App from ./App and ./index.css, "
-                    "creates the React root, and renders the app."
-                ),
-            },
-            {
-                "path": "src/index.css",
+                "path": "src/app/globals.css",
                 "summary": "写入全局样式",
                 "role": "Global stylesheet",
                 "requirements": (
-                    "Return a complete src/index.css with polished global styles that support the app brief. "
+                    "Return a complete src/app/globals.css with polished global styles that support the app brief. "
                     "Keep it lean but visually intentional, mobile-friendly, and production-ready."
                 ),
             },
             {
-                "path": "src/App.tsx",
+                "path": "src/app/page.tsx",
                 "summary": "写入主界面",
-                "role": "Primary app screen",
+                "role": "Primary App Router page",
                 "requirements": (
-                    "Return a complete src/App.tsx implementing the primary user flow from the app brief. "
-                    "Use React + TypeScript only. "
+                    "Return a complete src/app/page.tsx implementing the primary user flow from the app brief. "
+                    "Use Server Components by default and 'use client' only if this page itself needs browser state. "
                     "The UI must feel complete, use simplified Chinese for visible copy, and avoid TODO or placeholder language. "
-                    "Use local state and realistic sample data when needed."
+                    "Use server-side seed data, route handlers, or Server Actions when product state is needed."
                 ),
             },
         ]
@@ -667,34 +663,34 @@ class CodeGenerationService:
                 scripts = parsed.get("scripts") or {}
                 dependencies = parsed.get("dependencies") or {}
                 dev_dependencies = parsed.get("devDependencies") or {}
-                required_scripts = {"dev", "build", "preview"}
+                required_scripts = {"dev", "build"}
                 if not required_scripts.issubset(set(scripts.keys())):
-                    raise GenerationFailure("package.json 缺少 dev/build/preview scripts。")
-                if "react" not in dependencies or "react-dom" not in dependencies:
-                    raise GenerationFailure("package.json 缺少 react 或 react-dom。")
-                if "vite" not in dev_dependencies or "typescript" not in dev_dependencies or "@vitejs/plugin-react" not in dev_dependencies:
-                    raise GenerationFailure("package.json 缺少 vite、typescript 或 @vitejs/plugin-react。")
+                    raise GenerationFailure("package.json 缺少 dev/build scripts。")
+                if "next" not in dependencies or "react" not in dependencies or "react-dom" not in dependencies:
+                    raise GenerationFailure("package.json 缺少 next、react 或 react-dom。")
+                if "typescript" not in dev_dependencies:
+                    raise GenerationFailure("package.json 缺少 typescript。")
             if target_path == "tsconfig.json" and "compilerOptions" not in parsed:
                 raise GenerationFailure("tsconfig.json 缺少 compilerOptions。")
             return
 
-        if target_path == "index.html":
-            if 'id="root"' not in normalized and "id='root'" not in normalized:
-                raise GenerationFailure("index.html 缺少 root 节点。")
+        if target_path == "next.config.mjs":
+            if "nextConfig" not in normalized or "export default" not in normalized:
+                raise GenerationFailure("next.config.mjs 缺少 nextConfig 默认导出。")
             return
 
-        if target_path == "vite.config.ts":
-            if "defineConfig" not in normalized or "react(" not in normalized:
-                raise GenerationFailure("vite.config.ts 缺少 defineConfig 或 react 插件。")
+        if target_path == "next-env.d.ts":
+            if "next" not in normalized:
+                raise GenerationFailure("next-env.d.ts 缺少 Next.js 类型引用。")
             return
 
-        if target_path == "src/main.tsx":
-            if "createRoot" not in normalized or "./App" not in normalized or "./index.css" not in normalized:
-                raise GenerationFailure("src/main.tsx 缺少根渲染或必要导入。")
+        if target_path == "src/app/layout.tsx":
+            if "children" not in normalized or "globals.css" not in normalized:
+                raise GenerationFailure("src/app/layout.tsx 缺少 children 或 globals.css 导入。")
             return
 
-        if target_path == "src/App.tsx" and "export default" not in normalized:
-            raise GenerationFailure("src/App.tsx 缺少默认导出。")
+        if target_path == "src/app/page.tsx" and "export default" not in normalized:
+            raise GenerationFailure("src/app/page.tsx 缺少默认导出。")
 
     def _invoke_text_file_with_transport_retries(
         self,
@@ -794,17 +790,20 @@ class CodeGenerationService:
                 "version": "0.0.0",
                 "type": "module",
                 "scripts": {
-                    "dev": "vite",
-                    "build": "vite build",
-                    "preview": "vite preview",
+                    "dev": "next dev",
+                    "build": "next build",
+                    "start": "next start",
                 },
                 "dependencies": {
-                    "react": "^19.1.0",
-                    "react-dom": "^19.1.0",
+                    "next": "14.2.25",
+                    "react": "^18.3.1",
+                    "react-dom": "^18.3.1",
                 },
                 "devDependencies": {
+                    "@types/node": "^22.10.0",
+                    "@types/react": "^18.3.12",
+                    "@types/react-dom": "^18.3.1",
                     "typescript": "^5.9.2",
-                    "vite": "^7.1.3",
                 },
             },
             ensure_ascii=False,
@@ -815,42 +814,32 @@ class CodeGenerationService:
             FileOperation(type="write", path="package.json", summary="写入基础 package.json", content=package_json),
             FileOperation(
                 type="write",
-                path="index.html",
-                summary="写入应用 HTML 入口",
+                path="next.config.mjs",
+                summary="写入 Next.js 配置",
+                content="/** @type {import('next').NextConfig} */\nconst nextConfig = {};\n\nexport default nextConfig;\n",
+            ),
+            FileOperation(
+                type="write",
+                path="next-env.d.ts",
+                summary="写入 Next.js 类型声明",
+                content="/// <reference types=\"next\" />\n/// <reference types=\"next/image-types/global\" />\n",
+            ),
+            FileOperation(
+                type="write",
+                path="src/app/layout.tsx",
+                summary="写入根布局",
                 content=(
-                    "<!doctype html>\n"
-                    "<html lang=\"zh-CN\">\n"
-                    "  <head>\n"
-                    "    <meta charset=\"UTF-8\" />\n"
-                    "    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\" />\n"
-                    f"    <title>{spec.title}</title>\n"
-                    "  </head>\n"
-                    "  <body>\n"
-                    "    <div id=\"root\"></div>\n"
-                    "    <script type=\"module\" src=\"/src/main.tsx\"></script>\n"
-                    "  </body>\n"
-                    "</html>\n"
+                    "import type { Metadata } from 'next';\n"
+                    "import './globals.css';\n\n"
+                    f"export const metadata: Metadata = {{ title: {dumps(spec.title, ensure_ascii=False)} }};\n\n"
+                    "export default function RootLayout({ children }: { children: React.ReactNode }) {\n"
+                    "  return <html lang=\"zh-CN\"><body>{children}</body></html>;\n"
+                    "}\n"
                 ),
             ),
             FileOperation(
                 type="write",
-                path="src/main.tsx",
-                summary="写入 React 入口文件",
-                content=(
-                    "import { StrictMode } from 'react';\n"
-                    "import { createRoot } from 'react-dom/client';\n"
-                    "import App from './App';\n"
-                    "import './index.css';\n\n"
-                    "createRoot(document.getElementById('root')!).render(\n"
-                    "  <StrictMode>\n"
-                    "    <App />\n"
-                    "  </StrictMode>,\n"
-                    ");\n"
-                ),
-            ),
-            FileOperation(
-                type="write",
-                path="src/index.css",
+                path="src/app/globals.css",
                 summary="写入基础全局样式",
                 content=(
                     ":root {\n"
@@ -865,8 +854,7 @@ class CodeGenerationService:
                     "  box-sizing: border-box;\n"
                     "}\n\n"
                     "html,\n"
-                    "body,\n"
-                    "#root {\n"
+                    "body {\n"
                     "  min-height: 100%;\n"
                     "}\n\n"
                     "body {\n"
@@ -920,7 +908,7 @@ class CodeGenerationService:
             (("完成", "勾选", "toggle"), "toggle completion"),
             (("删除", "移除", "delete"), "delete items"),
             (("筛选", "过滤", "filter"), "filter items"),
-            (("本地持久化", "本地存储", "localstorage", "persist"), "localStorage persistence"),
+            (("本地持久化", "本地存储", "localstorage", "persist"), "server-side persistence or database-backed state"),
             (("清爽明亮", "浅色", "light"), "light clean visual style"),
             (("深色", "黑色", "dark"), "dark visual style"),
             (("手机", "移动端", "mobile"), "mobile-friendly layout"),
@@ -941,7 +929,7 @@ class CodeGenerationService:
 
         if not requirements:
             requirements.append("clear primary user flow")
-            requirements.append("real sample content")
+            requirements.append("realistic seed-backed content")
             requirements.append("light mobile-friendly layout")
 
         deduped: List[str] = []
@@ -962,13 +950,14 @@ class CodeGenerationService:
             [
                 (
                     "system",
-                    "You are repairing a React + Vite TypeScript project generated by a coding agent. "
+                    "You are repairing a Next.js App Router TypeScript project generated by a coding agent. "
                     "Prefer patch operations for existing files and keep the change set as small as possible. "
                     "Do not emit op=run or shell commands. Express dependency fixes as file edits, usually by updating package.json. "
                     "Do not leave placeholder, TODO, or stub UI behind after the repair. "
-                    "Replace user-facing placeholder copy with finished UI, even if the content is backed by sample data. "
+                    "Replace user-facing placeholder copy with finished UI, using server-side seed/demo data or route handlers when needed. "
                     "Preserve the existing product scope and visual direction unless the repair context explicitly requires a broader change. "
-                    "You may add or keep Tailwind CSS, Radix UI primitives, shadcn/ui-style local components, Framer Motion, React Router, lucide-react, Zustand, TanStack Query, clsx, tailwind-merge, and similar lightweight React ecosystem tools when they materially help resolve the issue. "
+                    "You may add or keep Tailwind CSS, Radix UI primitives, shadcn/ui-style local components, Framer Motion, lucide-react, zod, Prisma, clsx, tailwind-merge, and similar lightweight Next/React ecosystem tools when they materially help resolve the issue. "
+                    "Keep repairs aligned with the lightweight Vercel app contract: do not introduce Prisma, DATABASE_URL, auth, Server Actions, API routes, or extra page routes unless the existing app already depends on them or the brief explicitly requires them. "
                     "Do not force the project back to a single preferred visual stack or house style. "
                     "Remove unused React imports when the automatic JSX runtime is active. "
                     "Fix TypeScript noUnusedLocals and noUnusedParameters issues by removing or using unused imports, variables, and useState setters. "
@@ -1640,8 +1629,7 @@ class CodeGenerationService:
     @staticmethod
     def _should_use_staged_generation(context_snapshot: List[WorkspaceFile]) -> bool:
         existing_paths = {item.path for item in context_snapshot}
-        required_paths = {"package.json", "index.html", "src/main.tsx", "src/App.tsx"}
-        return not required_paths.issubset(existing_paths)
+        return not NEXT_REQUIRED_PATHS.issubset(existing_paths)
 
     def _materialize_workspace_snapshot(
         self,
@@ -2033,8 +2021,8 @@ class CodeGenerationService:
                 packageManager="npm",
             ),
             ExecutionStep(
-                type="start_vite_preview",
-                description="启动 Vite 开发服务器以便交互预览。",
+                type="start_next_preview",
+                description="启动 Next.js 开发服务器以便交互预览。",
                 packageManager="npm",
                 port=4173,
             ),

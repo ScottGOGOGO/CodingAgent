@@ -66,6 +66,7 @@ async def health() -> dict:
         "status": "ok",
         "modes": [ReasoningMode.PLAN_SOLVE.value, ReasoningMode.REACT.value],
         "qwenConfigured": bool(settings.qwen_api_key),
+        "deepseekConfigured": bool(settings.deepseek_api_key),
         "modelConfigured": settings.model_is_configured,
         "provider": settings.resolved_runtime_provider,
         "adapter": "openai_compatible",

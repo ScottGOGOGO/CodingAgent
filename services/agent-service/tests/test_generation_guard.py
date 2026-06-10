@@ -8,7 +8,7 @@ def test_generation_guard_ignores_normal_input_placeholder_props() -> None:
         FileOperation.model_validate(
             {
                 "type": "write",
-                "path": "src/App.tsx",
+                "path": "src/app/page.tsx",
                 "summary": "Render app shell",
                 "content": (
                     "export default function App() {\n"
@@ -64,7 +64,7 @@ def test_generation_guard_allows_real_todo_domain_identifiers() -> None:
     operations = [
         FileOperation(
             type="write",
-            path="src/App.tsx",
+            path="src/app/page.tsx",
             summary="Write todo app.",
             content=(
                 "type Todo = { id: string; text: string; completed: boolean };\n"
@@ -84,23 +84,23 @@ def test_generation_guard_detects_missing_local_import_targets() -> None:
         FileOperation.model_validate(
             {
                 "type": "write",
-                "path": "src/App.tsx",
+                "path": "src/app/page.tsx",
                 "summary": "Render routed app",
                 "content": "import Home from './components/Home';\nexport default function App() { return <Home />; }\n",
             }
         )
     ]
 
-    assert guard.find_missing_local_imports(operations, {"src/App.tsx"}) == ["src/App.tsx -> ./components/Home"]
+    assert guard.find_missing_local_imports(operations, {"src/app/page.tsx"}) == ["src/app/page.tsx -> ./components/Home"]
 
 
 def test_generation_guard_materializes_workspace_snapshot_with_patch_hunks() -> None:
     guard = GenerationGuardService()
-    snapshot = [WorkspaceFile(path="src/App.tsx", content="export const title = 'Draft';\n")]
+    snapshot = [WorkspaceFile(path="src/app/page.tsx", content="export const title = 'Draft';\n")]
     operations = [
         FileOperation(
             type="patch",
-            path="src/App.tsx",
+            path="src/app/page.tsx",
             summary="Replace title",
             hunks=[PatchHunk(search="Draft", replace="Ready", occurrence=1)],
         )
@@ -122,6 +122,6 @@ def test_generation_guard_blocks_only_critical_placeholder_ui_feedback() -> None
     assert GenerationGuardService.critic_found_blocking_stub_feedback(
         "The app still contains route-only skeleton screens.",
         [
-            "[critical] Placeholder UI remains in src/App.tsx with 待实现 labels.",
+            "[critical] Placeholder UI remains in src/app/page.tsx with 待实现 labels.",
         ],
     )

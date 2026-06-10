@@ -18,6 +18,25 @@ export const SMOKE_CASES = [
   },
 ];
 
+export const STRICT_FIVE_ROUND_CASES = [
+  "direct_ready",
+  "clarify_then_ready",
+  "personal_travel_journal_checklist_local",
+  "direct_ready",
+  "personal_travel_journal_checklist_local",
+].map((name, index) => {
+  const testCase = SMOKE_CASES.find((candidate) => candidate.name === name);
+  if (!testCase) {
+    throw new Error(`Unknown strict smoke case: ${name}`);
+  }
+  return {
+    ...testCase,
+    name: `${testCase.name}_round_${index + 1}`,
+    baseName: testCase.name,
+    strictRound: index + 1,
+  };
+});
+
 const GENERIC_CLARIFICATION_REPLY = [
   "1. 三天两晚，节假日出行，下周五出发。",
   "2. 住静安区，行程以静安、黄浦、徐汇一带为主。",

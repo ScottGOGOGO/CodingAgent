@@ -53,6 +53,7 @@ export interface ArchitectPromptInput {
   clarificationText: string;
   contextSummary: string;
   designBrief: string;
+  experienceBlueprint?: string;
   /** Optional rendered design seed text — drives concrete file planning. */
   designSeed?: string;
   overrides?: PromptOverrides;
@@ -62,6 +63,7 @@ export interface AgentCoderSystemInput {
   userBrief: string;
   clarificationText: string;
   designBrief: string;
+  experienceBlueprint?: string;
   /** Optional rendered design seed text — the coder must apply these colors/fonts/assets verbatim. */
   designSeed?: string;
   /** Sandbox-relative paths of design-seed assets already written before the loop starts. */
@@ -85,16 +87,6 @@ export interface RepairPromptInput extends AppPromptInput {
   issues: string;
   buildLog: string;
   currentFiles: string;
-  visualReview?: string;
-}
-
-export interface VisualCriticPromptInput {
-  userBrief: string;
-  clarificationText: string;
-  designBrief: string;
-  screenshotSummary: string;
-  currentFiles: string;
-  overrides?: PromptOverrides;
 }
 
 export interface ComposedPrompt {
@@ -113,9 +105,6 @@ const CLARIFICATION_SCHEMA =
 
 const DESIGN_BRIEF_SCHEMA =
   'Schema: {"summary": string, "targetUser": string, "productGoal": string, "coreExperience": string, "screens": string[], "interactionModel": string[], "visualDirection": string[], "contentStrategy": string[], "qualityBar": string[], "antiPatterns": string[]}';
-
-const VISUAL_REVIEW_SCHEMA =
-  'Schema: {"status": "passed|failed", "score": number, "summary": string, "issues": string[], "blockingIssues": string[], "warnings": string[], "repairInstructions": string[]}';
 
 const DESIGN_SEED_SCHEMA =
   'Schema: {"visualConcept": string, "palette": {"name": string, "primary": "#hexOrCSS", "surface": "#hexOrCSS", "ink": "#hexOrCSS", "accent": "#hexOrCSS", "muted": "#hexOrCSS", "gradient": "optional CSS gradient string"}, "typography": {"headingFamily": "CSS font stack", "headingWeight": "weight string", "bodyFamily": "CSS font stack", "monoFamily": "optional CSS font stack", "scale": "1-sentence type scale description"}, "motionLanguage": "1-2 sentence motion philosophy", "assets": [{"filename": "src/components/icons/Brand.tsx OR public/file.svg OR src/styles/tokens.css", "kind": "svg-component|static-svg|css-tokens", "content": "complete file body", "purpose": "why this exists"}], "antiPatterns": ["palette- or motion-specific things to avoid"]}';
@@ -151,7 +140,7 @@ export function composeClarifierPrompt(input: ClarifierPromptInput): ComposedPro
       "Session Contract",
       [
         "You are the clarifier inside a session-level coding agent.",
-        "The agent builds local Next.js 14 App Router applications with real server routes, durable data options, and deployable Vercel-compatible structure.",
+        "The agent builds local Next.js 14 App Router applications with real server routes, typed data boundaries, local-first options when requested, and deployable Vercel-compatible structure.",
         "Your job is to decide whether the user brief is clear enough to generate, and only ask when ambiguity would materially change the product.",
       ].join(" "),
     ),
@@ -161,6 +150,7 @@ export function composeClarifierPrompt(input: ClarifierPromptInput): ComposedPro
       [
         "Return action=ready with an empty questions array when the user already specified product type, target users or scenario, core screens/flows, content/data direction, and visual direction well enough for a first candidate.",
         "Return action=ask only when missing information would materially change visible UX, screens, flows, data persistence, user/auth needs, integrations, content, or mobile interaction choices.",
+        "If the brief names a feature but not its exact UI mechanics, choose a sensible first-version pattern instead of asking; implementation details can be decided by the design and architecture agents.",
         "Do not ask about high concurrency, anti-bot systems, real payment processing, or production compliance unless the user explicitly requested those.",
         "Do not use generic headings like 用户与目标, 首版范围, or 视觉方向 unless those exact details are uniquely necessary.",
         "When action=ask, ask 1 to 3 questions. Each question should have 2 to 4 concise option chips with useful descriptions.",
@@ -248,7 +238,7 @@ export function composeCoderPrompt(input: AppPromptInput): ComposedPrompt {
       "Agent Contract",
       [
         "You are the coder inside a session-level local coding agent.",
-        "Generate a complete Next.js 14 App Router + TypeScript application that can be installed, built, run locally, and deployed to Vercel.",
+        "Generate a lightweight but complete Next.js 14 App Router + TypeScript application that can be installed, built, run locally, and deployed to Vercel.",
         "Return the complete file set needed by the app, not a patch or explanation.",
       ].join(" "),
     ),
@@ -256,13 +246,19 @@ export function composeCoderPrompt(input: AppPromptInput): ComposedPrompt {
       "runtime_constraints",
       "Runtime Constraints",
       [
-        "Use Next.js 14 App Router, React 18, TypeScript strict, Server Components by default, Server Actions or Route Handlers for mutations, and CSS Modules or src/app/globals.css for styling.",
-        "Include package.json, next.config.mjs, tsconfig.json, next-env.d.ts, src/app/layout.tsx, src/app/page.tsx, src/app/globals.css, and every imported component, lib, data, action, route handler, Prisma, or env file.",
+        "Use Next.js 14 App Router, React 18, TypeScript strict, Server Components by default, and CSS Modules or src/app/globals.css for styling.",
+        "Include package.json, next.config.mjs, tsconfig.json, next-env.d.ts, src/app/layout.tsx, src/app/page.tsx, src/app/globals.css, and every imported component, lib, data, action, route handler, database, or env file.",
+        "Default to a compact Vercel-ready file tree like the reference apps: one primary route, optional route-equivalent tab/surface components, typed src/lib/demo-data.ts, and browser/local component state for user-owned drafts or saved items.",
+        "Keep package.json lean: next, react, react-dom, TypeScript/types, and only small helpers that materially help the brief such as lucide-react, zod, clsx, or date-fns.",
         "Use 'use client' only for interactive leaf components. Keep data loading, persistence, and secrets on the server side.",
-        "When persistence is useful, add a real data layer: Prisma with SQLite for sandbox validation by default, or Postgres-compatible Prisma when env vars are required. Avoid browser-only localStorage for durable product state.",
+        "Dynamic App Router page files should stay Server Components that accept params and pass data into client children. Do not call notFound() from a 'use client' page; render a client fallback state instead if the page itself must be client-side.",
+        "When the user requests static curated data, local-only personal use, no login/backend/API, or browser localStorage, use typed domain models in src/lib/demo-data.ts, optional route handlers for reads, and localStorage/IndexedDB only for user-owned saved records.",
+        "Use Route Handlers, Server Actions, Prisma, SQLite/Postgres, auth, or external SDKs only when the brief explicitly requires server persistence, multi-user data, admin/backend workflows, real integrations, or login.",
         "If database clients or service SDKs require env vars, initialize them lazily inside getter functions so next build does not fail when deployment-only variables are absent.",
         "The app is viewed inside an iPhone-like preview, so design mobile-first for a 390px wide viewport before expanding to desktop.",
         "TypeScript must compile in strict mode: when mapping navigation tabs, filters, or page ids into useState setters, type ids with explicit unions/as const or keep the state type compatible with string.",
+        "TypeScript strict also means array indexing and optional data must be narrowed: avoid returning (T | undefined)[] from maps, use typed filters, fallback values, or data structures whose elements are known present.",
+        "When renaming or adding domain fields during repair, update the type/interface, seed data, and every component access together. For travel place details, fields such as whyGo, bestTime, transport, photoTip, nearby, address, openTime, duration, and rainyTip must exist on the Place type and in seed data before any component reads place.<field>. For travel budgets, choose one field name such as costPerPerson or cost and use it consistently; do not leave components reading place.cost when data only defines costPerPerson.",
       ].join(" "),
     ),
     section(
@@ -275,8 +271,19 @@ export function composeCoderPrompt(input: AppPromptInput): ComposedPrompt {
         "Use CSS variables, purposeful type scale, rich mobile composition, tactile controls, real product states, and contextual details tied to the user's domain.",
         "Aim for compact app quality similar to Bloom Planner, My Season, or Brain Spin: named identity, immersive theme, clear shell/navigation, a memorable main interaction, and polished empty/loading/success states.",
         "Commercial-grade means the app has a complete product loop, credible microcopy, loading/empty/error/success states, and visual restraint. Decorative polish cannot compensate for missing workflow depth.",
+        "Interaction model is mandatory, not decorative: implement a real control set for the domain such as date/month switching, segmented filters, editable records, swipe/scroll or carousel navigation, long-press/context actions, auto-focus on primary input, and grouped history/progress views when the product implies them.",
+        "For diary, journal, tracker, checklist, planner, habit, mood, note, or local-input products, the first candidate must include text entry with focus treatment, save/edit/delete or revise actions, date navigation, grouped history, and a visible saved/completed state.",
+        "Every interaction in the design brief must map to code-level evidence: useState/useReducer state, form action or event handler, selected/active styling, ARIA label when appropriate, and a visible before/after state.",
         "Use lucide-react icons when helpful, and make controls feel like product controls rather than text blocks.",
-        "For travel/lifestyle apps, prefer editorial mobile composition, destination-specific content, bottom navigation or thumb-friendly controls, saved states, itinerary/story details, and image treatments that feel intentional.",
+        "For travel/lifestyle apps, prefer editorial mobile composition, destination-specific content, bottom navigation or thumb-friendly controls, saved states, itinerary/story details, and image treatments that feel intentional. Render destination/place media with actual <img> elements using local SVG/data URLs or stable remote URLs with alt text; do not rely only on background-color divs for required images.",
+        "For travel itineraries, links like /itinerary/1, /itinerary/2, /itinerary/3 and /location/{id} must resolve to working detail routes with visible content, media, and controls. If you link numeric day URLs, implement src/app/itinerary/[day]/page.tsx so numeric params work.",
+        "For static travel seed data, use deterministic ids/slugs such as day-1 and jingan-temple; do not generate route ids with nanoid, randomUUID, Math.random, Date.now, or runtime counters because dynamic routes and static params must remain stable.",
+        "For multi-day travel itineraries, each default day should carry at least four concrete stops/places, rainy/alternate plans should still have at least three useful stops, and place detail pages need deeper fields such as whyGo, bestTime, transport, photoTip, nearby, booking/reservation, or rainyTip rather than only reusing a one-sentence card description.",
+        "For travel apps with favorites/saved routes, implement first-load saved items plus localStorage persistence, segmented type filters, remove controls, and a separate must-visit/star toggle on both place detail and saved/favorites cards.",
+        "For travel budget pages, show daily subtotals and category totals for food, tickets, and local transport with at least one visible filter or expand/collapse state.",
+        "For travel place visuals, key visuals by place id/slug/name or per-place image fields. A single generic scenic/dining illustration reused for every place is not enough, even if it technically renders role=\"img\".",
+        "For media-heavy products such as travel, dining, venues, portfolios, galleries, catalogs, or product showcases, prefer visible source-declared media: either <img>/<Image> with src+alt, or CSS-only illustrated blocks marked with role=\"img\" and data-visual plus a descriptive aria-label. Give those blocks stable dimensions and painted foreground details, not just page background gradients.",
+        "For media-heavy products, the home/first route should contain visible media on repeated cards or hero content; media only on detail routes is weaker but not an engineering blocker.",
         "For learning, coaching, planning, or workflow apps, build around curriculum/progression, today's plan, logging, feedback, history, and the user's next best action.",
         "For operational tools, prioritize dense but readable scanning, restrained color, predictable controls, and efficient workflows.",
         "No visible in-app text should explain implementation details or say that this is a prototype.",
@@ -289,10 +296,11 @@ export function composeCoderPrompt(input: AppPromptInput): ComposedPrompt {
         "The generated UI must be a real product surface, not a technology demo, prompt response, scaffold, or landing page about the implementation.",
         "Do not expose internal implementation details in visible copy: Next.js, App Router, React, Prisma, Server Components, Server Actions, API routes, full-stack, sandbox, generated app, architecture plan, prompt, build, prototype.",
         "The first screen must let the target user start or inspect a meaningful domain workflow immediately. It should not merely restate the user's brief.",
-        "The app must have at least 4 product modules/surfaces in the code and UI, such as Today, Plan, Detail, Log, Progress, Feedback, History, Profile, Saved, or Settings, adapted to the domain.",
-        "Do not ship a single-screen illusion. Provide at least 3 distinct page routes or route-equivalent surfaces, and each one needs useful content plus a non-happy-path state.",
+        "The app must have at least 3 product modules or route-equivalent surfaces in the code and UI, such as Today, Plan, Detail, Log, Progress, Feedback, History, Saved, or Settings, adapted to the domain.",
+        "A single App Router page is acceptable for lightweight apps when it contains real tab/segment/detail/history surfaces with useful content and visible state changes; add extra routes only when the product flow benefits from addressable URLs.",
         "Use product-specific component names, copy, and data that match the domain. Avoid generic sections like 需求澄清, 全栈架构, 沙箱验证, Candidate, Demo, Sample, or Tech Stack.",
         "If the user asks for software that plans, teaches, tracks, sells, books, coordinates, or analyzes something, include one end-to-end primary flow with realistic state changes and server-backed data boundaries.",
+        "If the product centers on user input or local records, missing edit/revise, date switching, history grouping, focus treatment, or filter/sort controls is a blocking product failure.",
       ].join(" "),
     ),
     section(
@@ -300,10 +308,14 @@ export function composeCoderPrompt(input: AppPromptInput): ComposedPrompt {
       "Quality Gate",
       [
         "The result must feel like a product candidate, not a tutorial sample.",
-        "Use production-like copy and seed/demo data only through server-side modules, Prisma seed data, or route handlers. Do not describe it as static sample data in the UI.",
-        "Expose at least one meaningful server-side capability when the product calls for it: route handler, Server Action, auth/session boundary, database read/write, webhook placeholder, or external API integration facade.",
+        "Use production-like copy and seed/demo data through typed src/lib data modules, server-side modules, Prisma seed data when a database is intentionally used, or route handlers. Do not describe it as static sample data in the UI.",
+        "Expose server-side capabilities only when the product calls for them: route handler, Server Action, auth/session boundary, database read/write, webhook placeholder, or external API integration facade.",
         "No TODO, lorem ipsum, coming soon, placeholder descriptions, empty states without useful guidance, or broken imports.",
         "Every primary control shown should have a visible state change, filtering, tab switch, selection, or navigation effect when reasonable.",
+        "If the domain naturally involves places, photos, products, food, venues, artwork, or cards to inspect, repeated cards should include a visible media/illustration treatment that source and preview inspection can recognize as media, not just descriptive text.",
+        "For travel itineraries, under-filled day plans and shallow detail routes are blocking failures: each visible day plan needs enough stops to be useful, and every linked place/detail route must contain itinerary-specific advice, logistics, and media.",
+        "If the app includes favorites/saved/bookmarks routes, seed them with visible saved items from the domain data plus filters and remove/star actions; do not make the saved route only an empty state on first load, and do not hide all populated cards behind empty localStorage.",
+        "Before returning files, self-check the interaction model: primary input focuses visually, save/submit has pending and success states, records can be revisited, edited or filtered, date/time/history views can change, and the UI shows the result of those changes.",
       ].join(" "),
     ),
     section("dynamic_context", "Dynamic Context", `User brief:\n${input.userBrief}\n\nClarification answers:\n${input.clarificationText || "(none)"}\n\nProject context:\n${input.contextSummary}`),
@@ -336,68 +348,6 @@ export function composeCoderPrompt(input: AppPromptInput): ComposedPrompt {
   return { role: "coder", system, user, schemaHint: GENERATED_APP_SCHEMA, sections };
 }
 
-export function composeVisualCriticPrompt(input: VisualCriticPromptInput): ComposedPrompt {
-  const sections = [
-    section(
-      "agent_contract",
-      "Agent Contract",
-      [
-        "You are the visual_critic inside a session-level coding agent.",
-        "You review a generated mobile web candidate after build and screenshot capture.",
-        "Your decision controls whether the repairer must rewrite the UI before the candidate can be submitted.",
-      ].join(" "),
-    ),
-    section(
-      "role_mission",
-      "Visual Critic Mission",
-      [
-        "Judge whether the candidate satisfies the design brief and is visually credible inside a 390px iPhone preview.",
-        "Focus on visible product quality: composition, hierarchy, spacing, typography, color, domain specificity, mobile ergonomics, product content, and interaction affordances.",
-        "Be strict with generic or ugly output. Passing means a human reviewer would see an intentional mobile product, not a scaffold.",
-        "Treat visible implementation language as a product failure, even when the code is technically correct.",
-      ].join(" "),
-    ),
-    section(
-      "quality_gate",
-      "Pass/Fail Gate",
-      [
-        "Fail if the UI is mostly blank, mostly placeholder text, dominated by generic white cards, lacks domain-specific content, overflows the phone viewport, or ignores the design brief.",
-        "Fail if the visible first screen does not communicate the product purpose quickly.",
-        "Fail if the candidate reads like a landing page, tech demo, prompt summary, or HTML mockup instead of an app with a usable product workflow.",
-        "Fail if it lacks compact app structure: no named identity, no app shell/navigation, no signature interaction, no progress/history/next-action surface, or fewer than four domain-specific modules.",
-        "Fail if it feels like a demo rather than something a business could put in front of early customers: thin copy, fake metrics, one-route depth, missing loading/empty/error states, or buttons that do not lead to visible outcomes.",
-        "Fail if visible copy exposes internal implementation details such as Next.js, App Router, React, Prisma, Server Components, Server Actions, API route, full-stack, sandbox, generated app, architecture, prompt, build, or prototype.",
-        "Fail if the UI uses generic process labels like 需求澄清, 全栈架构, 沙箱验证, Candidate, Demo, Sample, or Tech Stack as product content.",
-        "Fail if primary controls are decorative only or the app showcases data without letting the user make a decision, update state, filter, log, save, submit, or navigate a meaningful domain flow.",
-        "Fail if primary media feels generic, unrelated to the stated place/product, or contradicts visible copy; request a domain-matched visual treatment or CSS-only fallback.",
-        "If screenshot capture failed, review the generated files and do not fail solely because the capture tool was unavailable.",
-        "Pass only if the score is 88 or higher.",
-        "Set status=failed only for blocking issues that require another repair pass before submission.",
-        "Put minor polish, subjective taste notes, and non-critical improvements in warnings, not blockingIssues.",
-        "Return concise repair instructions only for blocking issues that a coder can apply directly.",
-      ].join(" "),
-    ),
-    section("design_brief", "Design Brief", input.designBrief),
-    section("visual_evidence", "Screenshot Evidence", input.screenshotSummary),
-    section("dynamic_context", "Dynamic Context", `User brief:\n${input.userBrief}\n\nClarification answers:\n${input.clarificationText || "(none)"}`),
-    section("output_contract", "Output Contract", "Return valid JSON only. No markdown. No explanations outside the JSON object."),
-  ];
-
-  const system = withOverrides(renderSections(sections), input.overrides);
-  const user = [
-    userBlock("User Brief", input.userBrief),
-    input.clarificationText ? userBlock("Clarification Answers", input.clarificationText) : "",
-    userBlock("Design Brief", input.designBrief),
-    userBlock("Screenshot Evidence", input.screenshotSummary),
-    userBlock("Current Files", input.currentFiles),
-    input.overrides?.appendUser ? userBlock("Additional User Instructions", input.overrides.appendUser) : "",
-  ]
-    .filter(Boolean)
-    .join("\n\n");
-
-  return { role: "visual_critic", system, user, schemaHint: VISUAL_REVIEW_SCHEMA, sections };
-}
-
 export function composeRepairPrompt(input: RepairPromptInput): ComposedPrompt {
   const base = composeCoderPrompt(input);
   const repairSections = [
@@ -405,15 +355,19 @@ export function composeRepairPrompt(input: RepairPromptInput): ComposedPrompt {
       "role_mission",
       "Repairer Mission",
       [
-        "You are the repairer. Fix the current generated app so it passes validation, build, and product-quality expectations.",
-        "Return the complete corrected app, not a patch.",
+        "You are the repairer. Fix the current generated app so it passes validation, build, and blocking engineering checks. Product-quality findings are advisory unless explicitly marked blocking.",
+        "Return full file contents for every file you changed or added; unchanged files may be omitted because the runtime merges them with the current app.",
+        "When repair requires broad product changes, prioritize source files that own data, routing, visible cards, detail views, navigation, and CSS over generated build artifacts.",
+        "If validation says pages are thin, media is missing, controls are not functional, or routes have placeholder/detail gaps, you must return concrete source-file changes that add the missing content, media evidence, and state transitions. Do not answer with prose-only analysis.",
         "Keep the user's requested product and data, but rewrite weak UI, generic composition, placeholder copy, and broken code aggressively.",
+        "When a build error reports a missing property, fix the data contract at the source: inspect the interface, seed records, and component usage, then make the field name consistent everywhere rather than adding another mismatched alias.",
+        "When strict TypeScript reports possibly undefined values or arrays such as (T | undefined)[], narrow with typed filters, guard clauses, fallback values, or keyed maps whose lookups are proven before render; do not weaken tsconfig or silence the error.",
       ].join(" "),
     ),
     section(
       "dynamic_context",
       "Repair Context",
-      `Validation issues:\n${input.issues}\n\nVisual review:\n${input.visualReview || "(none)"}\n\nBuild log:\n${input.buildLog || "(none)"}\n\nCurrent files:\n${input.currentFiles}`,
+      `Validation issues:\n${input.issues}\n\nBuild log:\n${input.buildLog || "(none)"}\n\nCurrent files:\n${input.currentFiles}`,
     ),
   ];
   const sections = [
@@ -429,7 +383,6 @@ export function composeRepairPrompt(input: RepairPromptInput): ComposedPrompt {
     input.clarificationText ? userBlock("Clarification Answers", input.clarificationText) : "",
     userBlock("Validation Issues", input.issues),
     input.buildLog ? userBlock("Build Log", input.buildLog.slice(-4000)) : "",
-    input.visualReview ? userBlock("Visual Review", input.visualReview) : "",
     userBlock("Current Files", input.currentFiles),
     input.overrides?.appendUser ? userBlock("Additional User Instructions", input.overrides.appendUser) : "",
   ]
@@ -439,8 +392,8 @@ export function composeRepairPrompt(input: RepairPromptInput): ComposedPrompt {
   return { role: "repairer", system, user, schemaHint: GENERATED_APP_SCHEMA, sections };
 }
 
-export function formatDesignBriefForPrompt(brief: DesignBrief): string {
-  return [
+export function formatDesignBriefForPrompt(brief: DesignBrief, experienceBlueprint?: { domain: string } | string): string {
+  const lines = [
     `Summary: ${brief.summary}`,
     `Target user: ${brief.targetUser}`,
     `Product goal: ${brief.productGoal}`,
@@ -451,7 +404,13 @@ export function formatDesignBriefForPrompt(brief: DesignBrief): string {
     `Content strategy: ${brief.contentStrategy.join("; ")}`,
     `Quality bar: ${brief.qualityBar.join("; ")}`,
     `Anti-patterns: ${brief.antiPatterns.join("; ")}`,
-  ].join("\n");
+  ];
+  if (experienceBlueprint) {
+    lines.push("");
+    lines.push("Experience blueprint:");
+    lines.push(typeof experienceBlueprint === "string" ? experienceBlueprint : `Domain: ${experienceBlueprint.domain}`);
+  }
+  return lines.join("\n");
 }
 
 export function composeDesignSeedPrompt(input: DesignSeedPromptInput): ComposedPrompt {
@@ -587,16 +546,18 @@ export function composeArchitectPrompt(input: ArchitectPromptInput): ComposedPro
       "role_mission",
       "Architect Mission",
       [
-        "Translate the design brief into an executable engineering plan for a mobile-first full-stack Next.js 14 App Router + TypeScript app.",
-        "Decide the file tree, route segments, data models, database or durable storage plan, API route handlers, Server Actions, component decomposition, client/server boundaries, state architecture, env vars, deployment notes, and ordered task list.",
+        "Translate the design brief into an executable engineering plan for a mobile-first lightweight Next.js 14 App Router + TypeScript app.",
+        "Decide the smallest complete file tree, route or route-equivalent surfaces, data models, storage plan, optional API route handlers or Server Actions, component decomposition, client/server boundaries, state architecture, env vars, deployment notes, and ordered task list.",
         "Each task must be a small, verifiable unit: typically 1 to 4 files, with explicit acceptance criteria.",
         "Plan from user-visible product flows backwards. Name at least two primary user flows in the tasks and connect each to UI, data, mutation, and validation work.",
-        "Plan compact app structure explicitly: app shell/navigation, home/current-state surface, detail/action surface, progress/history surface, and settings/profile/collection surface when appropriate.",
-        "Order tasks by dependency: project config and env contract first, database schema/seed/server libs next, route handlers or Server Actions, UI primitives, route pages, integration wiring, then build/migration verification.",
-        "Plan for substantive product complexity: real server-side state, real interactions, real data contracts, multiple screens or route segments, and deployment-aware boundaries — not a single-page static demo.",
+        "Plan compact app structure explicitly: app shell/navigation or segmented controls, home/current-state surface, detail/action surface, and progress/history or saved surface when appropriate.",
+        "Plan the interaction model as an executable contract, not prose: list the state variables, events, mutations, active/selected visual states, and before/after UI evidence for each primary flow.",
+        "For diary, journal, tracker, checklist, planner, habit, mood, note, or local-input products, include tasks for primary input focus, save pending/success, edit/revise/delete affordances, date/month navigation, grouped history, and filters or sort controls.",
+        "Order tasks by dependency: project config and env/storage contract first, typed data/seed/server libs next, route handlers or Server Actions, UI primitives, route pages, integration wiring, then build verification.",
+        "Plan for product depth without unnecessary scaffold: real interactions, typed data contracts, compact surfaces, deployment-aware boundaries, and server-side read/mutation surfaces only when the brief calls for them.",
         "Include externalCapabilities for any controlled tool or skill guidance the coder should consult, such as use_design_skill for frontend systems and inspect_reference_app for Bloom Planner or My Season patterns.",
         "Include qualityChecks that prove the app is closed-loop: visible product modules, data schema, read/write APIs or Server Actions, mutation validation, visual/mobile evidence, and deployment/env readiness.",
-        "Aim for 8 to 16 tasks total. Fewer than 8 is usually too coarse; more than 16 is usually over-planned.",
+        "Aim for 3 to 4 tasks total. Lightweight local-first apps should prefer 3 tasks: scaffold/data, compact app surface, and build verification. Merge product polish into those tasks instead of creating extra bookkeeping tasks.",
       ].join(" "),
     ),
     section(
@@ -604,13 +565,16 @@ export function composeArchitectPrompt(input: ArchitectPromptInput): ComposedPro
       "Runtime Constraints",
       [
         "Stack: Next.js 14 App Router, React 18, TypeScript strict, Server Components by default, CSS Modules or globals.css. No Vite, no Pages Router, no React Router.",
-        "Use Next.js file-system routing under src/app. Use route.ts for public APIs/webhooks and Server Actions for in-app form mutations.",
+        "Use Next.js file-system routing under src/app. Use route.ts for public APIs/webhooks and Server Actions for in-app form mutations only when server behavior is explicitly needed.",
         "Do not put <style jsx> in App Router convention files such as page.tsx, layout.tsx, loading.tsx, or error.tsx unless the file is explicitly a Client Component. Prefer src/app/globals.css or CSS Modules.",
-        "Use Prisma with SQLite for sandbox-verifiable durable data by default; switch to Postgres-compatible Prisma when the app needs Vercel Postgres or DATABASE_URL. Include prisma/schema.prisma and migration/seed notes when persistence is planned.",
-        "You MAY use lightweight libraries that materially help complexity, declared in package.json: zod for validation, date-fns for date math, nanoid for ids, prisma and @prisma/client for data. Pick only what the design actually needs.",
+        "By default, choose provider=memory and orm=none: typed src/lib/demo-data.ts for domain records, browser storage for user-owned saved/checklist/journal state, and no DATABASE_URL.",
+        "Use Prisma with SQLite/Postgres only when true server persistence is explicitly required; include prisma/schema.prisma and migration/seed notes only when database persistence is planned.",
+        "You MAY use lightweight libraries that materially help complexity, declared in package.json: lucide-react for icons, zod for validation, clsx for classes, date-fns for date math. Add prisma/@prisma/client only for explicit database plans.",
+        "Never invent private SDK package names such as @训练档案/client, @data/client, or @domain/client. Data access must import from @prisma/client, local files under @/lib/*, or a real dependency explicitly listed in package.json.",
         "Mobile-first 390px viewport, designed to also adapt up to desktop.",
-        "Do not plan browser-only localStorage as the primary persistence layer. Use server-side data access, route handlers, or Server Actions for durable state.",
-        "File tree must include: package.json, next.config.mjs, tsconfig.json, next-env.d.ts, src/app/layout.tsx, src/app/page.tsx, src/app/globals.css, plus the components/lib/db/actions/api/prisma files you plan.",
+        "Do not reject browser localStorage when the user explicitly asks for local-only personal persistence. In that case, keep curated product data in typed modules and use browser storage for user-owned records with defensive parsing and visible offline/local-save states.",
+        "File tree must include: package.json, next.config.mjs, tsconfig.json, next-env.d.ts, src/app/layout.tsx, src/app/page.tsx, src/app/globals.css, plus only the components/lib/storage/api/db files you actually plan.",
+        "Treat the returned JSON as a machine-readable architecture contract. The orchestrator will preload the fixed scaffold files and will augment missing baseline entries, so your plan should declare how product code replaces or extends that scaffold.",
       ].join(" "),
     ),
     section(
@@ -618,26 +582,44 @@ export function composeArchitectPrompt(input: ArchitectPromptInput): ComposedPro
       "Plan Quality Bar (HARD MINIMUMS — orchestrator augments missing items)",
       [
         "Tasks must be specific enough that an LLM coder cannot misinterpret them.",
+        "The first task must satisfy the baseline scaffold contract, and the final task must run build/quality_audit and close the app. Keep those tasks even for tiny apps.",
         "Each task lists exactly the files it touches and what 'done' means. Acceptance criteria must be user-visible flow outcomes, not only 'file exists', 'component renders', or 'build passes'.",
         "File tree paths are real (e.g. src/app/trips/page.tsx, src/app/api/trips/route.ts, src/lib/db.ts, prisma/schema.prisma), not placeholders.",
-        "HARD MINIMUM — routes: plan AT LEAST 3 distinct Next.js page routes under src/app (e.g. /, /[detail], /history, /profile). A single-page app is rejected as under-built; if the design brief only describes one screen, still derive 3 routes by splitting current/detail/history surfaces.",
-        "HARD MINIMUM — components: plan AT LEAST 8 component files under src/components (mix of primitives, composites, and surface modules). 'AppShell' alone is not enough.",
-        "HARD MINIMUM — data: prisma/schema.prisma MUST declare AT LEAST 3 models, with AT LEAST one @relation across them.",
-        "HARD MINIMUM — mutation: plan AT LEAST one Server Action under src/app/**/actions.ts that a UI <form action={...}> actually calls, PLUS at least one route handler under src/app/api/.../route.ts. Both must be referenced by tasks that consume them.",
-        "HARD MINIMUM — states: every primary route gets explicit empty/loading/error state tasks. Plan loading.tsx and error.tsx siblings where applicable, plus an EmptyState component.",
+        "HARD MINIMUM — surfaces: plan one strong primary route plus at least 3 route-equivalent product surfaces through tabs, segmented controls, detail panels, history/progress modules, or saved lists. Prefer in-page surfaces for lightweight local-first apps; add extra routes only when addressable URLs materially help the product.",
+        "HARD MINIMUM — components: plan the smallest useful component set, typically 1 to 4 files under src/components. A single large client workbench is acceptable when it keeps the app lighter and clearer.",
+        "HARD MINIMUM — data: define at least 1 typed domain model. For local-first apps, src/lib/demo-data.ts should export typed models and realistic records that cover visible entities. For Prisma apps, schema depth should match the requested persistence, not an arbitrary model count.",
+        "HARD MINIMUM — mutation: when the product has user-owned state, plan a real mutation boundary. For local-first apps, client event handlers plus browser storage are enough; for server-persisted apps, use Server Actions or Route Handlers.",
+        "HARD MINIMUM — states: plan visible empty, loading or pending, error/recovery, and success/completed states inline or as small components. Add loading.tsx/error.tsx only when route-level boundaries are useful.",
+        "HARD MINIMUM — interaction model: plan at least three distinct domain interactions beyond plain navigation, such as save/submit, edit/revise/delete, filter/sort, date/month switch, expand/collapse, carousel/swipe/scroll selection, long-press/context action, focus-on-input, accept/dismiss/revise, or status toggle. Each interaction must name the component, state/mutation boundary, and visible outcome.",
+        "MEDIA GUIDANCE — media-heavy domains: for travel, dining, venues, portfolios, galleries, catalogs, or product showcases, plan imageAlt/visualLabel data and a reusable visual component that renders <img>/<Image> media or role=\"img\" data-visual CSS illustrations on repeated cards and detail surfaces.",
+        "HARD MINIMUM — travel itineraries: if planning a multi-day trip, plan at least 3 day records with at least 4 default place ids/stops per day, at least 3 rainy/alternate stops where alternates are offered, a dynamic day route, a dynamic place/location route, and per-place detail fields beyond description/tips.",
+        "MEDIA GUIDANCE — travel visuals: plan place-specific media fields or a visual map keyed by place id/slug/name. Avoid one type-only scenic/dining/default illustration for all places when the brief cares about place inspection.",
         "Each task must declare which architecture-plan slot it fulfills using a 'category' tag in its description, drawn from: 'scaffold', 'data-model', 'server-mutation', 'api-route', 'app-shell', 'route-surface', 'component-primitive', 'state-empty-loading-error', 'integration-wire', 'build-verify'.",
+        "Add a blocking qualityCheck named interaction-model-completeness that verifies the design brief's interactionModel is implemented with visible state changes, not just buttons or static copy.",
         "If the user brief mentions AI / suggestion / recommendation / generation, plan AT LEAST one AI flow: a route handler under src/app/api/ai/.../route.ts with accept/dismiss/revise UI affordances and a local-fallback path.",
         "Decide an auth strategy explicitly: NextAuth, Lucia, signed cookie via Server Action, OR a written justification in 'risks' explaining why no auth is needed. Do not silently skip auth.",
         "Components are named clearly and tied to screens / interactions from the design brief, with Server vs Client component boundaries obvious.",
         "Include domain-named components for app shell/navigation, the signature interaction, product detail, progress/history, and next-action feedback. Avoid generic component names as the main UI surface.",
-        "Data models cover every entity the UI displays and mutates. Include id, primary fields, relationships, and which route/action reads or writes them.",
-        "State architecture explains what lives in Server Components, what is mutated by Server Actions/API routes, and what ephemeral UI state stays in Client Components.",
+        "Include domain-named client components for the main interaction controls: e.g. DiaryComposer, MoodSelector, MonthSwitcher, HistoryGroupList, EditEntrySheet, FilterRail, SwipeDateStrip, or equivalents for the user's domain.",
+        "Data models cover every entity the UI displays and mutates. Include id, primary fields, relationships or references, and which route/action/client storage flow reads or writes them.",
+        "State architecture explains what lives in Server Components, what is mutated by Server Actions/API routes or local storage when explicitly requested, and what ephemeral UI state stays in Client Components.",
         "Env vars list must include any required DATABASE_URL, auth, external API, or Vercel storage values; client-exposed vars must be prefixed NEXT_PUBLIC_.",
         "Quality checks must be blocking when failure would make the app feel like a static mock, a generic template, or a frontend-only demo.",
-        "Aim for 10 to 18 tasks. Fewer than 10 is usually too coarse for a complete product.",
+        "Aim for 3 to 4 tasks. More than 4 should be merged to keep the output lightweight and finishable within one agent loop.",
       ].join(" "),
     ),
     section("design_brief", "Design Brief", input.designBrief),
+    input.experienceBlueprint
+      ? section(
+          "dynamic_context",
+          "Experience Blueprint",
+          [
+            "This blueprint is mandatory and user-visible. It defines the real content, flows, states, and acceptance scenarios the product must implement.",
+            "Treat it as the bridge between design strategy and code. Architecture tasks must map to these records, controls, state changes, and scenarios.",
+            input.experienceBlueprint,
+          ].join("\n\n"),
+        )
+      : undefined,
     input.designSeed
       ? section(
           "dynamic_context",
@@ -663,6 +645,7 @@ export function composeArchitectPrompt(input: ArchitectPromptInput): ComposedPro
     userBlock("User Brief", input.userBrief),
     input.clarificationText ? userBlock("Clarification Answers", input.clarificationText) : "",
     userBlock("Design Brief", input.designBrief),
+    input.experienceBlueprint ? userBlock("Experience Blueprint", input.experienceBlueprint) : "",
     input.designSeed ? userBlock("Design Seed", input.designSeed) : "",
     userBlock("Project Context", input.contextSummary),
     input.overrides?.appendUser ? userBlock("Additional User Instructions", input.overrides.appendUser) : "",
@@ -695,10 +678,11 @@ export function composeAgentCoderSystem(input: AgentCoderSystemInput): string {
       [
         "Implement the architecture plan task by task, in dependency order.",
         "Preserve the product concept from the design brief. If a task is underspecified, choose the more product-real, workflow-oriented interpretation.",
-        "MANDATORY DISCOVERY PHASE — your first three tool calls must be: (1) inspect_reference_app with the closest match (bloom-planner / my-season / brain-spin / compact-consumer-app); (2) use_design_skill('frontend-design'); (3) use_design_skill('mobile-app-shell'). The orchestrator hard-blocks write_file / edit_file / delete_file until discovery is complete.",
-        "After discovery, you MAY call additional use_design_skill (fullstack-product, ai-assisted-flow) if the product needs them.",
+        "A functional mobile starter scaffold is already preloaded in the sandbox: package.json, next.config.mjs, tsconfig.json, next-env.d.ts, src/app/layout.tsx, src/app/page.tsx, and src/app/globals.css. It includes local state, add/status/order/review controls, localStorage, and mobile CSS. Treat it as the minimum product floor: extend or rewrite it so the user's requested domain flows are complete, but do not delete these baseline files.",
+        "MANDATORY DISCOVERY PHASE — before writing files, call inspect_reference_app with the closest match (bloom-planner / my-season / brain-spin / compact-consumer-app), then use_design_skill('frontend-design'). The orchestrator hard-blocks write_file / edit_file / delete_file until discovery is complete.",
+        "After discovery, you MAY call additional use_design_skill (mobile-app-shell, fullstack-product, ai-assisted-flow) only if the product needs that extra guidance.",
         "After completing each task, call mark_task_done with that task id so the orchestrator can track progress.",
-        "FINISH GATE — finish_app automatically re-runs quality_audit and BLOCKS the finish call if any blocking audit check is failing. You must keep iterating until every blocking check passes. Read the audit response carefully; failures include distinct-page-routes (≥3 page routes), component-library (≥8 components under src/components), multiple-models (≥3 Prisma models), model-relations (at least one relation when using Prisma), server-action-wired (any declared Server Action must be referenced via formAction/<form action={...}>), full-state-coverage (loading + empty + error states), and the existing scaffold/visual/durable-state checks.",
+        "FINISH GATE — finish_app automatically re-runs quality_audit and BLOCKS the finish call only when hard engineering checks fail, such as missing Next.js scaffold, broken imports, deploy-contract issues, strict TypeScript hazards, or App Router client-boundary problems. Static audit may treat product depth as advisory, but architecture tasks are not complete until the visible user flows, state changes, and mobile preview surface requested by the brief are implemented.",
         "Before finish_app, also call run_build at least once and ensure it returned success.",
         "If a build fails, read the error, fix the offending files, and re-run build. Repeat until it passes.",
         "Read files before editing them when you are unsure of current content. Do not assume.",
@@ -709,17 +693,22 @@ export function composeAgentCoderSystem(input: AgentCoderSystemInput): string {
       "Runtime Constraints",
       [
         "Stack: Next.js 14 App Router + React 18 + TypeScript strict. No Vite, no index.html, no src/main.tsx, no Pages Router.",
+        "Keep the baseline scaffold contract intact. If you move UI into components, src/app/page.tsx must still import/render it, src/app/layout.tsx must still import globals.css, and package.json must keep dev/build/start scripts.",
         "Write COMPLETE file contents on write_file (no partial writes, no diffs). edit_file is for targeted replacements.",
         "TypeScript strict mode: explicitly type state setters, props, and reducer actions. Use `as const` and explicit unions when narrowing.",
         "When filtering nullable results, never use bare `.filter(Boolean)` before reading properties or passing ids to typed functions. Use a typed predicate: `.filter((item): item is NonNullable<typeof item> => Boolean(item))`.",
+        "If you add or rename fields in typed domain data, update all component props and all usages in the same pass. For travel place details, do not read place.bestTime, place.transport, place.photoTip, place.nearby, place.address, or similar fields unless the Place interface/type and every seed place object define them. For travel costs, use either costPerPerson everywhere or cost everywhere; never mix costPerPerson data with place.cost UI reads.",
         "Server Components are the default. Put 'use client' only in interactive leaf components and never import server-only modules into client files.",
+        "Keep dynamic src/app/**/[param]/page.tsx files as Server Components that receive params and render or pass typed data into client children. Never call notFound() inside a 'use client' page; use a server wrapper or render a client fallback state.",
         "Do not use styled-jsx (<style jsx>) inside src/app/page.tsx, src/app/layout.tsx, src/app/loading.tsx, or other Server Component route files. Put route/loading/error styles in src/app/globals.css or CSS Modules so next build does not import client-only from Server Components.",
-        "Use Route Handlers under src/app/api/**/route.ts for public APIs/webhooks and Server Actions for in-app mutations. Validate mutation inputs with zod when useful.",
-        "Use Prisma + SQLite for sandbox-verifiable persistence unless the architecture plan explicitly chooses Postgres. Include prisma/schema.prisma and a seed or migration path before calling db_migrate.",
+        "Use Route Handlers under src/app/api/**/route.ts for public APIs/webhooks and Server Actions for in-app mutations only when the plan asks for server behavior. Validate mutation inputs with zod when useful.",
+        "Follow the architecture plan's storage choice exactly. For local-first plans, do not add Prisma or DATABASE_URL; implement typed data modules, local storage helpers, and optional read-only route handlers. For database plans, use Prisma + SQLite unless the architecture plan explicitly chooses Postgres.",
+        "For local-first or static-export plans, do not introduce Server Actions, revalidatePath, Prisma, DATABASE_URL, or mutable API routes while fixing quality_audit. Satisfy mutation and persistence gates with client state, defensive browser storage when needed, typed src/lib data modules, visible saved/saving/error states, and optional read-only GET routes.",
         "Initialize database clients and SDKs lazily in getter functions so next build does not require deployment-only env vars at module import time.",
+        "Never invent private SDK package names such as @训练档案/client, @data/client, or @domain/client. Data access must import from @prisma/client, local files under @/lib/*, or a real dependency explicitly listed in package.json.",
         "Mobile-first 390px viewport. Design must adapt cleanly up to desktop.",
         "Use the libraries declared in the architecture plan and listed in package.json. Do not introduce new dependencies on the fly without updating package.json.",
-        "Use server-side persistence for user-modifiable product data. Browser state is only for ephemeral UI such as active tabs, filters, and optimistic controls.",
+        "Use server-side persistence for user-modifiable product data when the architecture plan calls for durable server storage. When the user explicitly requested local-only/browser storage, browser storage is the real persistence layer for user-owned records and must have defensive loading, save/delete/edit flows, and visible saved/offline state.",
         "No TODO, lorem ipsum, placeholder copy, or 'coming soon'. Every screen must look like a real product surface.",
       ].join(" "),
     ),
@@ -729,10 +718,11 @@ export function composeAgentCoderSystem(input: AgentCoderSystemInput): string {
       [
         "Build a usable product, not a visible explanation of the stack. No visible copy may mention Next.js, App Router, React, Prisma, Server Components, Server Actions, API routes, full-stack, sandbox, generated app, architecture plan, prompt, build, prototype, demo, or sample data.",
         "The first viewport must contain product-specific objects and at least one meaningful action or inspection path tied to the user's domain.",
-        "Business flows must be complete enough to test visually: choose, filter, log, save, submit, schedule, compare, analyze, or progress something, with visible state changes.",
+        "Business flows must expose visible state changes: choose, filter, log, save, submit, schedule, compare, analyze, or progress something with source-visible controls and outcomes.",
+        "The interaction model must be testable from source and preview-visible state: active/selected states, edit/revise/delete or equivalent secondary actions, filter/sort or date/month switching when relevant, grouped history/progress, focus styling on primary inputs, and visible before/after outcomes.",
         "Match compact app ambition similar to Bloom Planner, My Season, and Brain Spin: a named product identity, immersive theme, app shell/navigation, signature interaction, and a progress/history/next-action loop.",
         "Make the result commercially credible: real product vocabulary, believable seed data, useful error/empty/loading states, and multiple surfaces that a user could return to.",
-        "Write at least four domain-specific product modules or surfaces, not just one hero and a list.",
+        "Write at least three domain-specific product modules or route-equivalent surfaces, not just one hero and a list.",
         "For learning, coaching, planning, or workflow apps, include concrete curriculum/progression, today's plan, logging, feedback/corrections, history, and next-action surfaces where relevant.",
         "Use domain-specific component names and UI labels. Avoid generic process labels such as 需求澄清, 全栈架构, 沙箱验证, Candidate, Demo, Sample, or Tech Stack.",
       ].join(" "),
@@ -744,18 +734,36 @@ export function composeAgentCoderSystem(input: AgentCoderSystemInput): string {
         "Choose and execute a strong domain-specific visual concept. Typography, color, spacing, copy, motion, and interaction states all tie to the brief.",
         "Avoid generic AI demo aesthetics: centered title + search + white cards; Segoe UI / Tahoma / Arial; blue-gray gradients; plain card grids; generic dashboard shadows; stock spacing.",
         "Create a distinct app world: themed background, domain-specific controls, tactile cards or panels, purposeful icons, and responsive mobile composition.",
+        "For travel, dining, venue, portfolio, gallery, catalog, product, or other media-heavy apps, prefer visible media on the first screen and repeated cards: use <img>/<Image> with src+alt, or a role=\"img\" data-visual CSS illustration with stable dimensions, foreground shapes, and a meaningful aria-label.",
+        "For travel itineraries, homepage and itinerary links such as /itinerary/1, /itinerary/2, /itinerary/3 and /location/{id} must land on working detail pages with their own headings, destination media, weather/favorite/detail controls, and non-empty text. Numeric day links require numeric param support.",
+        "For multi-day travel itineraries, each default day must include at least four concrete stops/places; rainy/alternate plans must remain useful with at least three stops; place/location detail pages must render specific logistics and story fields such as whyGo, bestTime, transport, nearby, photoTip, reservation, and rainyTip.",
+        "For travel visuals, use per-place image/visual data or a visual map keyed by place id/slug/name. Do not satisfy media gates with one generic illustration that only switches by scenic/dining/type.",
+        "For favorites/saved/bookmarks routes, render populated saved-item cards by default from typed seed data, plus visible filters and remove/star/must-go controls; an empty-state-only route or a route that hides all cards until localStorage has user data is a blocking failure.",
         "Every interactive control must produce a visible state change. No dead buttons.",
-        "Seed/demo data must feel real and specific to the product domain, and should flow through server-side modules or database seed logic.",
+        "For input-heavy apps, include focus-visible styling, autoFocus or an obvious primary input affordance, editing/revision affordances, date or period navigation, and grouped record/history controls. A static list plus save button is not enough.",
+        "Seed/demo data must feel real and specific to the product domain, and should flow through typed data modules, server-side modules, or database seed logic when a database is intentionally used.",
       ].join(" "),
     ),
     section("design_brief", "Design Brief", input.designBrief),
+    input.experienceBlueprint
+      ? section(
+          "dynamic_context",
+          "Experience Blueprint (mandatory)",
+          [
+            "The architect prepared this experience blueprint before coding. Implement it concretely.",
+            "Use the seed records as product data, wire the primary flow, and make every listed interaction state visible.",
+            "The acceptance scenarios are not optional; quality_audit should be able to find source evidence for them.",
+            input.experienceBlueprint,
+          ].join("\n\n"),
+        )
+      : undefined,
     input.designSeed
       ? section(
           "frontend_design",
           "Design Seed (apply verbatim)",
           [
             "A design_seed has been resolved BEFORE this loop. Custom SVG components and CSS token files have already been written to the sandbox — you do not need to invent them.",
-            "Treat the palette colors, typography stacks, motion language, and anti-patterns as binding constraints. The visual_critic will fail your candidate if you ignore them or substitute generic alternatives.",
+            "Treat the palette colors, typography stacks, motion language, and anti-patterns as binding constraints, while prioritizing a buildable and usable app over subjective polish.",
             "Import the seeded assets directly. For example, import the brand mark from src/components/icons/* and import src/styles/design-tokens.css inside src/app/layout.tsx or src/app/globals.css so the CSS variables are available throughout.",
             input.preloadedAssets?.length
               ? `Preloaded asset paths (already in the sandbox): ${input.preloadedAssets.join(", ")}`
@@ -778,15 +786,17 @@ export function composeAgentCoderSystem(input: AgentCoderSystemInput): string {
         "- list_files first when you need a workspace overview.",
         "- read_file before edit_file. Never edit blind.",
         "- write_file for new files and full rewrites.",
-        "- run_command may run npm install, npm run build, next build, next dev, and prisma migrate dev when needed.",
-        "- db_migrate validates Prisma/database migrations in the sandbox. Use it after schema or migration changes.",
+        "- run_command may run npm install, npm run build, next build, next dev, and prisma migrate dev only when needed.",
+        "- db_migrate validates Prisma/database migrations in the sandbox. Use it only after schema or migration changes; skip it for local-first apps without prisma/schema.prisma.",
         "- vercel_env_set records required Vercel env vars when deployment needs secrets or managed storage values.",
         "- use_design_skill returns compact guidance from built-in design/product skills. Use it before writing the app shell or visual system.",
         "- inspect_reference_app returns safe reference-app profiles for Bloom Planner, My Season, Brain Spin, or compact consumer app patterns.",
-        "- quality_audit scans the current sandbox for product, frontend, backend, and persistence risks. Run it before finish_app.",
-        "- run_build only after a meaningful chunk of work, not after every file.",
+        "- quality_audit scans the current sandbox for engineering blockers and advisory product/frontend/backend/persistence risks. Run it before finish_app.",
+        "- If quality_audit reports interaction-model-depth, domain-interaction-affordances, visual, or product-depth findings, treat them as guidance unless the check is marked blocking. Do not keep expanding the app after all architecture tasks, build, and blocking engineering checks are complete.",
+        "- For local-first/static-export apps, fix quality_audit without adding Prisma, Server Actions, revalidatePath, DATABASE_URL, or mutable API routes; use client state plus local storage and typed domain data instead.",
+        "- run_build performs a scaffold preflight, dependency install, build, and limited automatic local repair. Use it after a meaningful chunk of work, not after every file.",
         "- mark_task_done immediately after finishing each task.",
-        "- finish_app at the very end with a short summary. Do NOT call finish_app while any task is still pending.",
+        "- finish_app at the very end with a short summary. Do NOT call finish_app while any task is still pending; if you forget it but files are complete, build passes, and quality_audit passes, the orchestrator may auto-complete closeout.",
       ].join("\n"),
     ),
     section(
@@ -807,7 +817,7 @@ export function composeAgentCoderSystem(input: AgentCoderSystemInput): string {
 export function formatArchitecturePlanForPrompt(plan: ArchitecturePlan): string {
   const lines: string[] = [];
   lines.push(`Summary: ${plan.summary}`);
-  lines.push(`Tech stack: ${plan.techStack.join(", ") || "(none)"}`);
+  lines.push(`Tech stack: ${plan.techStack.slice(0, 8).join(", ") || "(none)"}`);
   lines.push(`State architecture: ${plan.stateArchitecture}`);
   lines.push(`Server architecture: ${plan.serverArchitecture || "(none)"}`);
   lines.push(
@@ -836,19 +846,25 @@ export function formatArchitecturePlanForPrompt(plan: ArchitecturePlan): string 
 
   lines.push("");
   lines.push("File tree:");
-  for (const node of plan.fileTree) {
+  for (const node of plan.fileTree.slice(0, 24)) {
     const deps = node.dependencies?.length ? ` (depends on: ${node.dependencies.join(", ")})` : "";
     lines.push(`  - ${node.path} — ${node.purpose}${deps}`);
+  }
+  if (plan.fileTree.length > 24) {
+    lines.push(`  - ... ${plan.fileTree.length - 24} additional files omitted from coder prompt; keep following the task file lists.`);
   }
 
   if (plan.dataModels.length > 0) {
     lines.push("");
     lines.push("Data models:");
-    for (const model of plan.dataModels) {
+    for (const model of plan.dataModels.slice(0, 8)) {
       lines.push(`  - ${model.name}: ${model.description}`);
-      for (const field of model.fields) {
+      for (const field of model.fields.slice(0, 10)) {
         const desc = field.description ? ` (${field.description})` : "";
         lines.push(`      • ${field.name}: ${field.type}${desc}`);
+      }
+      if (model.fields.length > 10) {
+        lines.push(`      • ... ${model.fields.length - 10} additional fields omitted`);
       }
     }
   }
@@ -856,27 +872,33 @@ export function formatArchitecturePlanForPrompt(plan: ArchitecturePlan): string 
   if (plan.components.length > 0) {
     lines.push("");
     lines.push("Components:");
-    for (const component of plan.components) {
+    for (const component of plan.components.slice(0, 18)) {
       const props = component.props?.length ? ` props=[${component.props.join(", ")}]` : "";
       const uses = component.uses?.length ? ` uses=[${component.uses.join(", ")}]` : "";
       lines.push(`  - ${component.name} (${component.filePath}) — ${component.purpose}${props}${uses}`);
+    }
+    if (plan.components.length > 18) {
+      lines.push(`  - ... ${plan.components.length - 18} additional components omitted; implement only if required by pending tasks or quality_audit.`);
     }
   }
 
   if (plan.routes.length > 0) {
     lines.push("");
     lines.push("Routes:");
-    for (const route of plan.routes) {
+    for (const route of plan.routes.slice(0, 8)) {
       const file = route.filePath ? ` (${route.filePath})` : "";
       const rendering = route.rendering ? ` [${route.rendering}]` : "";
       lines.push(`  - ${route.path} → ${route.component}${file}${rendering}: ${route.description}`);
+    }
+    if (plan.routes.length > 8) {
+      lines.push(`  - ... ${plan.routes.length - 8} additional routes omitted; prefer completing core routes before adding optional surfaces.`);
     }
   }
 
   if (plan.apiEndpoints.length > 0) {
     lines.push("");
     lines.push("API endpoints:");
-    for (const endpoint of plan.apiEndpoints) {
+    for (const endpoint of plan.apiEndpoints.slice(0, 6)) {
       const runtime = endpoint.runtime ? ` runtime=${endpoint.runtime}` : "";
       lines.push(`  - ${endpoint.method} ${endpoint.path} (${endpoint.filePath})${runtime}: ${endpoint.purpose}`);
       if (endpoint.request || endpoint.response || endpoint.auth) {
@@ -896,7 +918,7 @@ export function formatArchitecturePlanForPrompt(plan: ArchitecturePlan): string 
   if (plan.serverActions.length > 0) {
     lines.push("");
     lines.push("Server actions:");
-    for (const action of plan.serverActions) {
+    for (const action of plan.serverActions.slice(0, 6)) {
       lines.push(`  - ${action.name} (${action.filePath}) — ${action.purpose}`);
       if (action.input || action.effects?.length) {
         lines.push(
@@ -914,7 +936,7 @@ export function formatArchitecturePlanForPrompt(plan: ArchitecturePlan): string 
   if (plan.envVars.length > 0) {
     lines.push("");
     lines.push("Environment variables:");
-    for (const envVar of plan.envVars) {
+    for (const envVar of plan.envVars.slice(0, 8)) {
       const required = envVar.required ? "required" : "optional";
       const scope = envVar.scope ? `, ${envVar.scope}` : "";
       const example = envVar.example ? `, example=${envVar.example}` : "";
@@ -925,7 +947,7 @@ export function formatArchitecturePlanForPrompt(plan: ArchitecturePlan): string 
   if (plan.integrations.length > 0) {
     lines.push("");
     lines.push("Integrations:");
-    for (const integration of plan.integrations) {
+    for (const integration of plan.integrations.slice(0, 4)) {
       const envVars = integration.envVars?.length ? ` env=[${integration.envVars.join(", ")}]` : "";
       const serverFiles = integration.serverFiles?.length ? ` files=[${integration.serverFiles.join(", ")}]` : "";
       lines.push(`  - ${integration.name}: ${integration.purpose}${envVars}${serverFiles}`);
@@ -935,7 +957,7 @@ export function formatArchitecturePlanForPrompt(plan: ArchitecturePlan): string 
   if (plan.externalCapabilities?.length) {
     lines.push("");
     lines.push("External capabilities to consult:");
-    for (const capability of plan.externalCapabilities) {
+    for (const capability of plan.externalCapabilities.slice(0, 3)) {
       lines.push(`  - ${capability.name}: ${capability.purpose}`);
       lines.push(`      trigger: ${capability.trigger}`);
       lines.push(`      output: ${capability.expectedOutput}`);
@@ -948,27 +970,31 @@ export function formatArchitecturePlanForPrompt(plan: ArchitecturePlan): string 
   if (plan.qualityChecks?.length) {
     lines.push("");
     lines.push("Blocking quality checks:");
-    for (const check of plan.qualityChecks) {
+    for (const check of plan.qualityChecks.slice(0, 8)) {
       const blocking = check.blocking ? "blocking" : "advisory";
       lines.push(`  - ${check.id} [${check.category}, ${blocking}]: ${check.requirement}`);
-      lines.push(`      evidence: ${check.evidence}`);
+    }
+    if (plan.qualityChecks.length > 8) {
+      lines.push(`  - ... ${plan.qualityChecks.length - 8} additional checks omitted; quality_audit remains authoritative before finish_app.`);
     }
   }
 
   lines.push("");
   lines.push("Tasks (in execution order):");
-  for (const task of plan.tasks) {
+  for (const task of plan.tasks.slice(0, 14)) {
     const deps = task.dependsOn?.length ? ` [after: ${task.dependsOn.join(", ")}]` : "";
     lines.push(`  • ${task.id}: ${task.title}${deps}`);
-    lines.push(`      description: ${task.description}`);
     lines.push(`      files: ${task.files.join(", ") || "(none)"}`);
     lines.push(`      acceptance: ${task.acceptance}`);
+  }
+  if (plan.tasks.length > 14) {
+    lines.push(`  • ... ${plan.tasks.length - 14} additional tasks omitted; progress checkpoints will surface pending task details when needed.`);
   }
 
   if (plan.risks?.length) {
     lines.push("");
     lines.push("Risks:");
-    for (const risk of plan.risks) {
+    for (const risk of plan.risks.slice(0, 4)) {
       lines.push(`  ! ${risk}`);
     }
   }

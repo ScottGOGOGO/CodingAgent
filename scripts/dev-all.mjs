@@ -61,6 +61,14 @@ function resolveNpmExecutable() {
   return process.platform === "win32" ? "npm.cmd" : "npm";
 }
 
+function cleanChildEnv(nextEnv) {
+  const cleaned = { ...nextEnv };
+  if (cleaned.FORCE_COLOR !== undefined) {
+    delete cleaned.NO_COLOR;
+  }
+  return cleaned;
+}
+
 function prefixStream(stream, prefix, target) {
   if (!stream) {
     return;
@@ -119,13 +127,13 @@ function log(message) {
 function spawnService(service) {
   const child = spawn(service.command, service.args, {
     cwd: service.cwd,
-    env: {
+    env: cleanChildEnv({
       ...env,
       ORCHESTRATOR_PORT: String(orchestratorPort),
       PLAYGROUND_PORT: String(playgroundPort),
       VITE_API_BASE: apiBase,
       FORCE_COLOR: env.FORCE_COLOR ?? "1",
-    },
+    }),
     stdio: ["inherit", "pipe", "pipe"],
   });
 
@@ -192,10 +200,10 @@ log("Press Ctrl+C to stop all services.\n");
 
 const prebuild = spawnSync(npmExecutable, ["--workspace", "@vide/agent-runtime", "run", "build"], {
   cwd: repoRoot,
-  env: {
+  env: cleanChildEnv({
     ...env,
     FORCE_COLOR: env.FORCE_COLOR ?? "1",
-  },
+  }),
   stdio: "inherit",
 });
 

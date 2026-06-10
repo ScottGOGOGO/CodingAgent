@@ -31,7 +31,7 @@ class ExecutionStep(AppBaseModel):
     type: Literal[
         "install_dependencies",
         "build_web_app",
-        "start_vite_preview",
+        "start_next_preview",
         "stop_preview",
         "health_check",
         "git_snapshot",

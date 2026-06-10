@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 
-import { ExpertRouter, loadRuntimeConfig, ModelClient, PlaywrightVisualPreviewer, QueryEngine } from "@vide/agent-runtime";
+import { ExpertRouter, loadRuntimeConfig, ModelClient, QueryEngine, safePreviewPort } from "@vide/agent-runtime";
 import type {
   ClarificationAnswer,
   ProjectEvent,
@@ -10,6 +10,7 @@ import type {
   RunRecord,
   RunStateResponse,
   SessionState,
+  CandidateChangeSet,
 } from "@vide/contracts";
 
 import { ConflictError, NotFoundError } from "../errors.js";
@@ -18,6 +19,7 @@ import type { RunnerService } from "../runner.js";
 import type { ProjectStore } from "../store.js";
 import { createVersionRecord } from "../versioning.js";
 import type { WorkspaceService } from "../workspace.js";
+import { createToolRuntimeAdapters } from "./tool-runtime.js";
 
 export function now() {
   return new Date().toISOString();
@@ -82,6 +84,7 @@ export class RunService {
       updatedAt: now(),
     };
     project.updatedAt = now();
+    await this.workspace.resetPreviewLog(project);
     await this.store.createRun(run);
     await this.persist(project, session, run);
     this.publish({ type: "run.started", projectId: project.id, runId: run.id, createdAt: now(), payload: { project, run } });
@@ -124,8 +127,9 @@ export class RunService {
     let run = await this.requireRun(runId);
 
     const runtimeConfig = loadRuntimeConfig();
+    const model = new ModelClient(runtimeConfig);
     const engine = new QueryEngine(
-      new ExpertRouter(new ModelClient(runtimeConfig)),
+      new ExpertRouter(model, { strictGeneration: runtimeConfig.strictGeneration }),
       undefined,
       {
         onPhase: (phase) => {
@@ -154,16 +158,20 @@ export class RunService {
           this.publish({ type: "task.updated", projectId: project.id, runId: run.id, createdAt: now(), payload: { task } });
         },
         onLog: (message) => {
+          void this.workspace.appendPreviewLog(project, message.endsWith("\n") ? message : `${message}\n`);
           this.publish({ type: "project.preview_log", projectId: project.id, runId: run.id, createdAt: now(), payload: { message } });
         },
       },
-      new PlaywrightVisualPreviewer(),
+      undefined,
       {
         maxTurns: runtimeConfig.maxTurns,
         maxToolCallsPerTurn: runtimeConfig.agentMaxToolCallsPerTurn,
         maxToolCallsTotal: runtimeConfig.agentMaxToolCallsTotal,
         modelTurnTimeoutMs: runtimeConfig.agentModelTurnTimeoutMs,
+        skipAcceptance: runtimeConfig.skipAcceptance,
+        strictGeneration: runtimeConfig.strictGeneration,
       },
+      createToolRuntimeAdapters({ model }),
     );
 
     const result = await engine.run({
@@ -185,9 +193,9 @@ export class RunService {
     session.toolCalls = run.toolCalls;
     session.clarificationRequest = result.clarificationRequest;
     session.designBrief = result.designBrief;
-    session.visualReview = result.visualReview;
     session.candidate = result.candidate;
     session.error = run.error;
+    session.failureKind = run.failureKind;
     session.updatedAt = now();
 
     if (result.candidate) {
@@ -202,7 +210,10 @@ export class RunService {
       };
       await this.persist(project, session, run);
       try {
-        const previewUrl = await this.runner.startPreview(
+        const startPreview = runtimeConfig.skipAcceptance
+          ? this.runner.startDevPreview.bind(this.runner)
+          : this.runner.startPreview.bind(this.runner);
+        const previewUrl = await startPreview(
           {
             id: `candidate-${run.id}`,
             workspaceRoot: result.candidate.sandboxPath,
@@ -222,7 +233,26 @@ export class RunService {
         await this.store.saveCandidate(result.candidate);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        project.preview = { ...project.preview, status: "error", lastLog: message, updatedAt: now() };
+        if (runtimeConfig.strictGeneration) {
+          run = {
+            ...run,
+            status: "failed",
+            phase: "preview",
+            error: message,
+            failureKind: "preview_failed",
+            updatedAt: now(),
+          };
+          session.error = message;
+          session.failureKind = "preview_failed";
+          project.status = "failed";
+          project.preview = { ...project.preview, status: "error", lastLog: message, updatedAt: now() };
+          project.session = session;
+          project.latestRun = run;
+          await this.persist(project, session, run);
+          this.publish({ type: "run.failed", projectId: project.id, runId: run.id, createdAt: now(), payload: { project, run } });
+          return;
+        }
+        await this.recordCandidatePreviewError(project, session, run, result.candidate, message);
       }
       this.publish({
         type: "candidate.created",
@@ -360,6 +390,8 @@ export class RunService {
       project.status = "failed";
       run.status = "failed";
       run.error = project.preview.lastLog;
+      run.failureKind = "preview_failed";
+      session.failureKind = "preview_failed";
     }
 
     await this.persist(project, session, run);
@@ -405,6 +437,27 @@ export class RunService {
     await this.store.saveProject(project);
   }
 
+  private async recordCandidatePreviewError(
+    project: ProjectRecord,
+    session: SessionState,
+    run: RunRecord,
+    candidate: CandidateChangeSet,
+    message: string,
+  ): Promise<void> {
+    project.preview = { ...project.preview, status: "error", lastLog: message, updatedAt: now() };
+    project.updatedAt = now();
+    project.session = session;
+    project.latestRun = run;
+    await this.persist(project, session, run);
+    this.publish({
+      type: "project.updated",
+      projectId: project.id,
+      runId: run.id,
+      createdAt: now(),
+      payload: { project, run, candidate },
+    });
+  }
+
   private async persistProgress(projectId: string, sessionId: string, run: RunRecord) {
     this.progressQueue = this.progressQueue
       .catch(() => undefined)
@@ -448,6 +501,7 @@ export class RunService {
       updatedAt: now(),
     };
     session.error = message;
+    session.failureKind = "generation_incomplete";
     session.tasks = failedRun.tasks;
     session.toolCalls = failedRun.toolCalls;
     session.updatedAt = now();
@@ -490,16 +544,12 @@ export class RunService {
   }
 
   private portForRun(runId: string): number {
-    return 4300 + (hashId(runId) % 500);
+    return safePreviewPort(runId, 4300, 500);
   }
 
   private portForProject(projectId: string): number {
-    return 5200 + (hashId(projectId) % 500);
+    return safePreviewPort(projectId, 5200, 500);
   }
-}
-
-function hashId(value: string): number {
-  return [...value].reduce((sum, char) => sum + char.charCodeAt(0), 0);
 }
 
 function upsertTask(tasks: RunRecord["tasks"], task: RunRecord["tasks"][number]): RunRecord["tasks"] {

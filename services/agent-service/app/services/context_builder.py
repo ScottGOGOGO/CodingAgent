@@ -8,13 +8,16 @@ from app.models import AgentSessionState, WorkspaceFile
 
 CORE_CONTEXT_PATHS = (
     "package.json",
+    "next.config.mjs",
     "tsconfig.json",
-    "tsconfig.node.json",
-    "vite.config.ts",
-    "index.html",
-    "src/main.tsx",
-    "src/App.tsx",
-    "src/styles.css",
+    "next-env.d.ts",
+    "src/app/layout.tsx",
+    "src/app/page.tsx",
+    "src/app/globals.css",
+    "src/app/actions.ts",
+    "src/app/api/items/route.ts",
+    "src/lib/db.ts",
+    "prisma/schema.prisma",
 )
 
 

@@ -4,7 +4,7 @@ import { dirname, join, relative, resolve, sep } from "node:path";
 
 import type { ChangedFile } from "@vide/contracts";
 
-const IGNORED_NAMES = new Set(["node_modules", "dist", ".git", ".agent", ".preview.log"]);
+const IGNORED_NAMES = new Set(["node_modules", "dist", ".next", "coverage", ".git", ".agent", ".preview.log"]);
 const TEXT_FILE_RE = /\.(?:css|html|json|jsx|md|mjs|cjs|ts|tsx|js|txt|yml|yaml)$/i;
 
 export interface WorkspaceFile {
